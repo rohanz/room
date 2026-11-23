@@ -34465,6 +34465,8 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
   const ignored = await ignoredTrackedPaths(dir, paths);
   const gaps = /* @__PURE__ */ new Set([...gitlinks.keys(), ...publication.excludedPaths, ...paths.filter((p) => ignored.has(p) || !safe(p) || inputs.rules.roomIgnore.ignores(p))]);
   const entries = new Map(gitlinks);
+  const modes = /* @__PURE__ */ new Map();
+  const fileMode = async (p) => (await fs29.lstat(path31.join(dir, p))).mode & 73 ? "100755" : "100644";
   for (const fact of facts) {
     if (gaps.has(fact.path)) continue;
     const entry = publication.entries.get(fact.path);
@@ -34472,6 +34474,8 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
       gaps.add(fact.path);
       continue;
     }
+    const mode2 = fact.kind === "file" && fact.hash ? await fileMode(fact.path) : void 0;
+    if (mode2) modes.set(fact.path, mode2);
     if (initial) {
       const start = raw.get(fact.path);
       if (start) {
@@ -34480,7 +34484,6 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
         else entries.set(fact.path, start);
       }
     } else if (fact.kind === "file" && fact.hash) {
-      const mode2 = (await fs29.lstat(path31.join(dir, fact.path))).mode & 73 ? "100755" : "100644";
       entries.set(fact.path, { mode: mode2, oid: fact.text === void 0 ? fact.hash : await graph.blob(fact.text) });
     }
   }
@@ -34494,7 +34497,9 @@ async function captureShadow(graph, dir, base, carried = [], initial = false) {
     const listed = (await git(dir, inventoryArgs)).split("\0").filter(Boolean);
     if (inventorySignature(listed) !== inventorySignature(inventory)) return false;
     if (linkSignature(await git(dir, stageArgs)) !== linkSignature(stages)) return false;
-    return signature(await scan()) === signature(facts);
+    if (signature(await scan()) !== signature(facts)) return false;
+    for (const [p, mode2] of modes) if (await fileMode(p) !== mode2) return false;
+    return true;
   };
   if (!await current3()) throw new Error("moving snapshot");
   return { entries, gaps, head: expectedHead, fingerprint, current: current3 };
@@ -34736,6 +34741,7 @@ var init_conflict_shadow = __esm({
       closed = false;
       cancellation = new AbortController();
       halted = false;
+      stage = "initialization";
       lastSummary = 0;
       registry;
       onSlots = (event) => {
@@ -34953,7 +34959,7 @@ var init_conflict_shadow = __esm({
           })]);
         } catch (error2) {
           if (error2 === expired && !cleanup && !this.closed) {
-            this.halt("over budget: private pass deadline exceeded");
+            this.halt(`over budget: private pass deadline exceeded during ${this.stage}`);
             this.stop();
           }
           throw error2;
@@ -34970,38 +34976,53 @@ var init_conflict_shadow = __esm({
         return this.cleanup;
       }
       start() {
-        if (this.running || this.closed) return;
+        if (this.running || this.closed || this.halted) return;
         this.graph.deadline = performance.now() + PASS_MS;
         this.running = withGitReadDeadline(this.graph.deadline, () => this.budget(async () => {
-          let stage = "initialization";
+          this.stage = "initialization";
           try {
             if (!this.initialized) {
               if (this.halted) return;
               await this.init();
             }
-            stage = "worker inventory";
+            this.stage = "worker inventory";
             const registry2 = this.registry, records = requireWorkerInventory(await registry2.list());
             for (const r of records) if (r.lead.participant === this.s.me.name) this.names.set(identity2(r.id), r.name);
             this.retire(records);
             if (!this.halted) {
-              stage = "storage accounting";
+              this.stage = "storage accounting";
               if (await this.graph.storageBudget() >= CAP - 32 * 1024 * 1024) {
                 this.halt("200 MB session ceiling; lead history unavailable");
                 return;
               }
-              while (this.queue.size) {
-                stage = "lifecycle";
+              if (this.queue.size) {
                 const ticket = this.queue.get(this.applied + 1);
+                this.stage = `lifecycle ${ticket.kind}`;
+                const deadline = this.graph.deadline;
+                const checkDeadline2 = () => {
+                  if (performance.now() >= deadline) throw new Error("over budget");
+                };
+                const withinDeadline = async (work) => {
+                  checkDeadline2();
+                  try {
+                    return await work();
+                  } finally {
+                    checkDeadline2();
+                  }
+                };
                 const ids = this.ownerIds(ticket);
                 if (ticket.kind !== "spawn" && ticket.kind !== "collection" && ids.some((id3) => ![...this.actors.values()].some((a) => a.id === id3))) {
                   if (ticket.kind === "remove") this.cancel(ticket);
-                  else if (!await this.lost(ticket, "participant no longer modelled")) return;
+                  else if (!await withinDeadline(() => this.lost(ticket, "participant no longer modelled"))) return;
                 }
                 if (!ticket.make) {
-                  if (performance.now() < ticket.expires) return;
-                  if (!await this.lost(ticket, "unfilled reservation expired")) return;
+                  if (performance.now() < ticket.expires) {
+                    checkDeadline2();
+                    return;
+                  }
+                  if (!await withinDeadline(() => this.lost(ticket, "unfilled reservation expired"))) return;
                 } else try {
-                  const event = await ticket.make();
+                  const event = await withinDeadline(ticket.make);
                   if (event.kind === "spawn") {
                     this.spawned = true;
                     this.names.set(identity2(event.record.id), event.record.name);
@@ -35012,28 +35033,35 @@ var init_conflict_shadow = __esm({
                   }
                   if (event.kind === "unsupported" && event.reason === "no-op") {
                   } else if (ticket.ambiguous) {
-                    if (!await this.lost(ticket, "missing generation or overlapping mutation")) return;
+                    if (!await withinDeadline(() => this.lost(ticket, "missing generation or overlapping mutation"))) return;
                   } else {
                     ticket.waiting = false;
-                    if (await this.event({ ...event, generation: ticket.generation }) === false) {
-                      if (performance.now() >= ticket.expires) await this.lost(ticket, "collection completion expired");
+                    if (await withinDeadline(() => this.event({ ...event, generation: ticket.generation })) === false) {
+                      if (performance.now() >= ticket.expires) await withinDeadline(() => this.lost(ticket, "collection completion expired"));
                       else ticket.waiting = true;
+                      checkDeadline2();
                       return;
                     }
                   }
                 } catch (error2) {
                   if (this.closed) return;
-                  if (!await this.lost(ticket, this.reason(error2, "event failed"))) return;
+                  const reason = this.reason(error2, "event failed");
+                  if (!await withinDeadline(() => this.lost(ticket, reason))) return;
                 }
+                checkDeadline2();
                 this.applied = ticket.order;
                 this.queue.delete(ticket.order);
                 this.remember(this.applied);
+                return;
               }
-              stage = "observation";
+              this.stage = "observation";
               await this.pass();
             }
           } catch (error2) {
-            if (!this.closed) this.halt(`${this.reason(error2, `${stage} failed`)}; lead history unavailable`);
+            if (!this.closed) {
+              const reason = this.reason(error2, `${this.stage} failed`);
+              this.halt(`${reason}${reason.startsWith("over budget") ? ` during ${this.stage}` : ""}; lead history unavailable`);
+            }
           }
         }), this.cancellation.signal).catch((error2) => {
           if (!this.closed) this.halt(`${this.reason(error2, "private pass failed")}; lead history unavailable`);
@@ -35044,7 +35072,9 @@ var init_conflict_shadow = __esm({
         });
       }
       async idle() {
+        let applied;
         do {
+          applied = this.applied;
           if (this.timer) {
             clearTimeout(this.timer);
             this.timer = void 0;
@@ -35052,7 +35082,7 @@ var init_conflict_shadow = __esm({
           this.start();
           await this.running;
           await this.removal;
-        } while (!this.closed && !this.halted && this.queue.get(this.applied + 1)?.make && !this.queue.get(this.applied + 1)?.waiting);
+        } while (!this.closed && !this.halted && (this.queue.get(this.applied + 1)?.make && !this.queue.get(this.applied + 1)?.waiting || !this.queue.size && this.applied !== applied));
       }
       stop() {
         if (this.closed) return;

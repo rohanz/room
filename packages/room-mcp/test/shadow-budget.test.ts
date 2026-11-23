@@ -8,7 +8,7 @@ function context(){
   vi.useFakeTimers({toFake:['setTimeout','clearTimeout']})
   vi.spyOn(performance,'now').mockReturnValue(1000)
   const cancellation=new AbortController()
-  return {graph:{deadline:11000},cancellation,closed:false,halt:vi.fn(),stop:vi.fn()}
+  return {graph:{deadline:11000},cancellation,closed:false,stage:'lifecycle spawn',halt:vi.fn(),stop:vi.fn()}
 }
 it('ends a hung private pass at the injected deadline without waiting for its work',async()=>{
   const state=context();let settled=false
@@ -17,7 +17,7 @@ it('ends a hung private pass at the injected deadline without waiting for its wo
   await vi.advanceTimersByTimeAsync(10000)
   expect((await result).message).toMatch(/over budget/)
   expect(settled).toBe(false);expect(state.stop).toHaveBeenCalledTimes(1)
-  expect(state.halt).toHaveBeenCalledWith('over budget: private pass deadline exceeded')
+  expect(state.halt).toHaveBeenCalledWith('over budget: private pass deadline exceeded during lifecycle spawn')
   expect(vi.getTimerCount()).toBe(0)
 })
 it('cancels a private pass independently of its injected clock',async()=>{

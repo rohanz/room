@@ -1,0 +1,5391 @@
+{
+  "baselineProductionCutoff": {
+    "sourceFiles": 1567,
+    "fixtureFiles": 1569,
+    "load": 0,
+    "unbounded": false,
+    "samples": [
+      {
+        "round": 0,
+        "ms": 9999.61175,
+        "cpu": {
+          "user": 5377496,
+          "system": 2032381
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 9,
+            "ms": 465.6768340000017
+          },
+          "disk scan": {
+            "calls": 14,
+            "ms": 7859.9168759999975
+          },
+          "initial capture": {
+            "calls": 4,
+            "ms": 5756.5218749999985
+          },
+          "private git read-tree": {
+            "calls": 6,
+            "ms": 35.27441699999872
+          },
+          "private git update-index": {
+            "calls": 6,
+            "ms": 40.948333000002094
+          },
+          "private git write-tree": {
+            "calls": 6,
+            "ms": 151.06324999999742
+          },
+          "private git commit-tree": {
+            "calls": 2,
+            "ms": 14.005999999999403
+          },
+          "headAnchor": {
+            "calls": 2,
+            "ms": 2905.1829579999994
+          },
+          "private git rev-parse": {
+            "calls": 2,
+            "ms": 11.65612499999952
+          },
+          "private git update-ref": {
+            "calls": 2,
+            "ms": 12.768292000000656
+          },
+          "event": {
+            "calls": 2,
+            "ms": 5953.588040999999
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 3696.9164990000027
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 4044.0336669999997
+          }
+        },
+        "actors": 0,
+        "halted": true
+      }
+    ],
+    "logs": [
+      "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\"",
+      "conflict shadow: family stopped for this session: over budget: private pass deadline exceeded (rohanz) (swallowed)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded (rohanz+first)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded (rohanz+second)"
+    ]
+  },
+  "baselineExtendedNoLoad": {
+    "sourceFiles": 1567,
+    "fixtureFiles": 1569,
+    "load": 0,
+    "unbounded": true,
+    "samples": [
+      {
+        "round": 0,
+        "ms": 14725.122875000001,
+        "cpu": {
+          "user": 6299882,
+          "system": 2949543
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 10,
+            "ms": 583.4590409999992
+          },
+          "disk scan": {
+            "calls": 20,
+            "ms": 12032.632794000005
+          },
+          "initial capture": {
+            "calls": 4,
+            "ms": 5961.903501999999
+          },
+          "private git read-tree": {
+            "calls": 7,
+            "ms": 46.59808399999929
+          },
+          "private git update-index": {
+            "calls": 7,
+            "ms": 54.094999999999345
+          },
+          "private git write-tree": {
+            "calls": 7,
+            "ms": 202.21841700000186
+          },
+          "private git commit-tree": {
+            "calls": 2,
+            "ms": 14.266166999999768
+          },
+          "headAnchor": {
+            "calls": 2,
+            "ms": 3072.8246670000008
+          },
+          "private git rev-parse": {
+            "calls": 2,
+            "ms": 13.532208999999057
+          },
+          "private git update-ref": {
+            "calls": 2,
+            "ms": 13.572042000001602
+          },
+          "event": {
+            "calls": 2,
+            "ms": 6202.1581240000005
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4425.304958000001
+          },
+          "private git merge-tree": {
+            "calls": 1,
+            "ms": 6.712999999999738
+          },
+          "private git merge-base": {
+            "calls": 1,
+            "ms": 5.70129199999792
+          },
+          "private git rev-list": {
+            "calls": 2,
+            "ms": 48.64445799999885
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8521.073541000002
+          }
+        },
+        "actors": 3,
+        "halted": false
+      },
+      {
+        "round": 1,
+        "ms": 8121.222625000002,
+        "cpu": {
+          "user": 1404259,
+          "system": 1445025
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 6,
+            "ms": 312.8487919999934
+          },
+          "disk scan": {
+            "calls": 12,
+            "ms": 6684.825831999999
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4061.9082080000044
+          },
+          "private git read-tree": {
+            "calls": 3,
+            "ms": 21.318374999998923
+          },
+          "private git update-index": {
+            "calls": 3,
+            "ms": 20.69745800000237
+          },
+          "private git write-tree": {
+            "calls": 3,
+            "ms": 95.127542000002
+          },
+          "private git rev-list": {
+            "calls": 3,
+            "ms": 67.64312499999869
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8119.0299170000035
+          }
+        },
+        "actors": 3,
+        "halted": false
+      },
+      {
+        "round": 2,
+        "ms": 8100.750166000002,
+        "cpu": {
+          "user": 1383000,
+          "system": 1450258
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 6,
+            "ms": 307.88370999999097
+          },
+          "disk scan": {
+            "calls": 12,
+            "ms": 6726.761917
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4058.2260840000017
+          },
+          "private git read-tree": {
+            "calls": 3,
+            "ms": 19.223416000000725
+          },
+          "private git update-index": {
+            "calls": 3,
+            "ms": 19.8312909999986
+          },
+          "private git write-tree": {
+            "calls": 3,
+            "ms": 70.75049900000158
+          },
+          "private git rev-list": {
+            "calls": 3,
+            "ms": 66.2627080000093
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8098.732333000004
+          }
+        },
+        "actors": 3,
+        "halted": false
+      }
+    ],
+    "logs": [
+      "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+    ]
+  },
+  "baselineExtendedSyntheticLoad": {
+    "sourceFiles": 1567,
+    "fixtureFiles": 1569,
+    "load": 2,
+    "unbounded": true,
+    "samples": [
+      {
+        "round": 0,
+        "ms": 14982.087458,
+        "cpu": {
+          "user": 7694993,
+          "system": 3454330
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 10,
+            "ms": 561.663250999999
+          },
+          "disk scan": {
+            "calls": 20,
+            "ms": 12296.050668000003
+          },
+          "initial capture": {
+            "calls": 4,
+            "ms": 5909.006124999999
+          },
+          "private git read-tree": {
+            "calls": 7,
+            "ms": 44.83941799999957
+          },
+          "private git update-index": {
+            "calls": 7,
+            "ms": 51.33937500000138
+          },
+          "private git write-tree": {
+            "calls": 7,
+            "ms": 186.8405419999999
+          },
+          "private git commit-tree": {
+            "calls": 2,
+            "ms": 15.0434580000001
+          },
+          "headAnchor": {
+            "calls": 2,
+            "ms": 2991.0740830000004
+          },
+          "private git rev-parse": {
+            "calls": 2,
+            "ms": 13.125917000001209
+          },
+          "private git update-ref": {
+            "calls": 2,
+            "ms": 13.21729200000118
+          },
+          "event": {
+            "calls": 2,
+            "ms": 6115.3330000000005
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4376.084832999999
+          },
+          "private git merge-tree": {
+            "calls": 1,
+            "ms": 7.085457999997743
+          },
+          "private git merge-base": {
+            "calls": 1,
+            "ms": 6.554374999999709
+          },
+          "private git rev-list": {
+            "calls": 2,
+            "ms": 51.43279199999961
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8865.409209
+          }
+        },
+        "actors": 3,
+        "halted": false
+      },
+      {
+        "round": 1,
+        "ms": 8581.110042,
+        "cpu": {
+          "user": 2268874,
+          "system": 1879305
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 6,
+            "ms": 329.05729099999735
+          },
+          "disk scan": {
+            "calls": 12,
+            "ms": 7101.174748999998
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4258.460917
+          },
+          "private git read-tree": {
+            "calls": 3,
+            "ms": 21.401292000002286
+          },
+          "private git update-index": {
+            "calls": 3,
+            "ms": 21.109957999997278
+          },
+          "private git write-tree": {
+            "calls": 3,
+            "ms": 74.08662400000321
+          },
+          "private git rev-list": {
+            "calls": 3,
+            "ms": 69.88629199999923
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8578.786584000001
+          }
+        },
+        "actors": 3,
+        "halted": false
+      },
+      {
+        "round": 2,
+        "ms": 8805.961,
+        "cpu": {
+          "user": 2355123,
+          "system": 2061893
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 6,
+            "ms": 345.13812400000097
+          },
+          "disk scan": {
+            "calls": 12,
+            "ms": 7297.727209000001
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4419.935667000002
+          },
+          "private git read-tree": {
+            "calls": 3,
+            "ms": 20.994126000001415
+          },
+          "private git update-index": {
+            "calls": 3,
+            "ms": 21.7979589999959
+          },
+          "private git write-tree": {
+            "calls": 3,
+            "ms": 79.53999900000053
+          },
+          "private git rev-list": {
+            "calls": 3,
+            "ms": 73.83212500000809
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8803.419167
+          }
+        },
+        "actors": 3,
+        "halted": false
+      }
+    ],
+    "logs": [
+      "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+    ]
+  },
+  "checkpointedProductionSyntheticLoad": {
+    "sourceFiles": 1567,
+    "fixtureFiles": 1569,
+    "load": 2,
+    "unbounded": false,
+    "samples": [
+      {
+        "round": 0,
+        "ms": 14525.465333,
+        "cpu": {
+          "user": 6117008,
+          "system": 2856520
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 10,
+            "ms": 573.0544170000012
+          },
+          "disk scan": {
+            "calls": 20,
+            "ms": 11864.81879
+          },
+          "initial capture": {
+            "calls": 4,
+            "ms": 5848.897209999999
+          },
+          "private git read-tree": {
+            "calls": 7,
+            "ms": 44.1577109999962
+          },
+          "private git update-index": {
+            "calls": 7,
+            "ms": 50.579209999998056
+          },
+          "private git write-tree": {
+            "calls": 7,
+            "ms": 182.63129199999457
+          },
+          "private git commit-tree": {
+            "calls": 2,
+            "ms": 14.942458999999872
+          },
+          "headAnchor": {
+            "calls": 2,
+            "ms": 2968.999917000001
+          },
+          "private git rev-parse": {
+            "calls": 2,
+            "ms": 13.088334000000032
+          },
+          "private git update-ref": {
+            "calls": 2,
+            "ms": 13.913667999997415
+          },
+          "event": {
+            "calls": 2,
+            "ms": 6057.036041
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4230.097083000001
+          },
+          "private git merge-tree": {
+            "calls": 1,
+            "ms": 6.906166999997367
+          },
+          "private git merge-base": {
+            "calls": 1,
+            "ms": 6.415415999999823
+          },
+          "private git rev-list": {
+            "calls": 2,
+            "ms": 48.655125000001135
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8462.780749999998
+          }
+        },
+        "jobs": [
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3142.6788750000005
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 2917.9169999999995
+          },
+          {
+            "stage": "observation",
+            "ms": 8464.742917
+          }
+        ],
+        "actors": 3,
+        "halted": false
+      },
+      {
+        "round": 1,
+        "ms": 8507.451833000003,
+        "cpu": {
+          "user": 1839153,
+          "system": 1655026
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 6,
+            "ms": 328.7815010000013
+          },
+          "disk scan": {
+            "calls": 12,
+            "ms": 7034.860207999998
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4232.430999999997
+          },
+          "private git read-tree": {
+            "calls": 3,
+            "ms": 20.27004200000374
+          },
+          "private git update-index": {
+            "calls": 3,
+            "ms": 21.4989160000041
+          },
+          "private git write-tree": {
+            "calls": 3,
+            "ms": 76.72912500000166
+          },
+          "private git rev-list": {
+            "calls": 3,
+            "ms": 70.25350000000253
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8505.422417000002
+          }
+        },
+        "jobs": [
+          {
+            "stage": "observation",
+            "ms": 8507.364375000001
+          }
+        ],
+        "actors": 3,
+        "halted": false
+      },
+      {
+        "round": 2,
+        "ms": 8805.172457999997,
+        "cpu": {
+          "user": 2051229,
+          "system": 1884146
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 6,
+            "ms": 335.5605409999953
+          },
+          "disk scan": {
+            "calls": 12,
+            "ms": 7282.908458000016
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4414.7125000000015
+          },
+          "private git read-tree": {
+            "calls": 3,
+            "ms": 21.46508399999584
+          },
+          "private git update-index": {
+            "calls": 3,
+            "ms": 22.69999900000039
+          },
+          "private git write-tree": {
+            "calls": 3,
+            "ms": 78.19079099999362
+          },
+          "private git rev-list": {
+            "calls": 3,
+            "ms": 72.86745799999335
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8803.071
+          }
+        },
+        "jobs": [
+          {
+            "stage": "observation",
+            "ms": 8805.083791000001
+          }
+        ],
+        "actors": 3,
+        "halted": false
+      }
+    ],
+    "logs": [
+      "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+    ]
+  },
+  "checkpointedProductionFinalScaleNoSyntheticLoad": {
+    "sourceFiles": 1567,
+    "fixtureFiles": 1569,
+    "load": 0,
+    "unbounded": false,
+    "samples": [
+      {
+        "round": 0,
+        "ms": 14078.840875000002,
+        "cpu": {
+          "user": 6515510,
+          "system": 2901600
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 10,
+            "ms": 546.7399580000038
+          },
+          "disk scan": {
+            "calls": 20,
+            "ms": 11537.123540000006
+          },
+          "initial capture": {
+            "calls": 4,
+            "ms": 5675.209459
+          },
+          "private git read-tree": {
+            "calls": 7,
+            "ms": 43.93158500000027
+          },
+          "private git update-index": {
+            "calls": 7,
+            "ms": 48.42841599999883
+          },
+          "private git write-tree": {
+            "calls": 7,
+            "ms": 175.13037500000064
+          },
+          "private git commit-tree": {
+            "calls": 2,
+            "ms": 14.564290999999685
+          },
+          "headAnchor": {
+            "calls": 2,
+            "ms": 2889.3719169999995
+          },
+          "private git rev-parse": {
+            "calls": 2,
+            "ms": 12.430250999999771
+          },
+          "private git update-ref": {
+            "calls": 2,
+            "ms": 13.271041999999397
+          },
+          "event": {
+            "calls": 2,
+            "ms": 5879.133333000001
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4051.685374999999
+          },
+          "private git merge-tree": {
+            "calls": 1,
+            "ms": 6.644207999999708
+          },
+          "private git merge-base": {
+            "calls": 1,
+            "ms": 6.971790999999939
+          },
+          "private git rev-list": {
+            "calls": 2,
+            "ms": 46.15883399999802
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8192.715500000002
+          }
+        },
+        "jobs": [
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3096.9762919999994
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 2786.6492500000004
+          },
+          {
+            "stage": "observation",
+            "ms": 8195.08
+          }
+        ],
+        "actors": 3,
+        "halted": false
+      },
+      {
+        "round": 1,
+        "ms": 8227.980875000001,
+        "cpu": {
+          "user": 2798095,
+          "system": 2057780
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 6,
+            "ms": 307.8154590000013
+          },
+          "disk scan": {
+            "calls": 12,
+            "ms": 6823.445250000001
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4087.3904579999944
+          },
+          "private git read-tree": {
+            "calls": 3,
+            "ms": 18.23500100000092
+          },
+          "private git update-index": {
+            "calls": 3,
+            "ms": 20.99995800000397
+          },
+          "private git write-tree": {
+            "calls": 3,
+            "ms": 70.44375099999888
+          },
+          "private git rev-list": {
+            "calls": 3,
+            "ms": 66.64620900000227
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8225.505792
+          }
+        },
+        "jobs": [
+          {
+            "stage": "observation",
+            "ms": 8227.918708000001
+          }
+        ],
+        "actors": 3,
+        "halted": false
+      },
+      {
+        "round": 2,
+        "ms": 8150.694999999996,
+        "cpu": {
+          "user": 2211510,
+          "system": 1852850
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 6,
+            "ms": 306.69091599999956
+          },
+          "disk scan": {
+            "calls": 12,
+            "ms": 6768.076084
+          },
+          "observation capture": {
+            "calls": 3,
+            "ms": 4109.228958
+          },
+          "private git read-tree": {
+            "calls": 3,
+            "ms": 19.154123999996955
+          },
+          "private git update-index": {
+            "calls": 3,
+            "ms": 20.434707000003982
+          },
+          "private git write-tree": {
+            "calls": 3,
+            "ms": 69.58083399999668
+          },
+          "private git rev-list": {
+            "calls": 3,
+            "ms": 67.30512599999565
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 8148.279083000005
+          }
+        },
+        "jobs": [
+          {
+            "stage": "observation",
+            "ms": 8150.6394580000015
+          }
+        ],
+        "actors": 3,
+        "halted": false
+      }
+    ],
+    "logs": [
+      "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+    ]
+  },
+  "pacingOnlyTenProductionCutoff": {
+    "participants": 10,
+    "sourceFiles": 1567,
+    "fixtureFiles": 1569,
+    "load": 0,
+    "unbounded": false,
+    "samples": [
+      {
+        "round": 0,
+        "ms": 37711.830166,
+        "cpu": {
+          "user": 14411781,
+          "system": 8943202
+        },
+        "stages": {
+          "private git ls-tree": {
+            "calls": 29,
+            "ms": 1525.8812900000194
+          },
+          "disk scan": {
+            "calls": 48,
+            "ms": 30553.913502999985
+          },
+          "initial capture": {
+            "calls": 18,
+            "ms": 26892.36708400001
+          },
+          "private git read-tree": {
+            "calls": 23,
+            "ms": 135.1377919999759
+          },
+          "private git update-index": {
+            "calls": 23,
+            "ms": 156.66233400000056
+          },
+          "private git write-tree": {
+            "calls": 23,
+            "ms": 541.0779579999908
+          },
+          "private git commit-tree": {
+            "calls": 2,
+            "ms": 13.761332999998558
+          },
+          "headAnchor": {
+            "calls": 9,
+            "ms": 12795.503458000003
+          },
+          "private git rev-parse": {
+            "calls": 9,
+            "ms": 55.12941699998555
+          },
+          "private git update-ref": {
+            "calls": 9,
+            "ms": 55.80750199999238
+          },
+          "event": {
+            "calls": 9,
+            "ms": 27689.616375
+          },
+          "observation capture": {
+            "calls": 6,
+            "ms": 9153.925292
+          },
+          "pass": {
+            "calls": 1,
+            "ms": 9997.401958999995
+          }
+        },
+        "jobs": [
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3315.4843340000007
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3089.5266669999983
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3042.2352500000015
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3035.073625000001
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3115.1612079999977
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3063.004667000001
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 2991.2630419999987
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3036.263665999999
+          },
+          {
+            "stage": "lifecycle spawn",
+            "ms": 3023.165166999999
+          },
+          {
+            "stage": "observation",
+            "ms": 9999.297957999996
+          }
+        ],
+        "actors": 0,
+        "halted": true
+      }
+    ],
+    "logs": [
+      "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\"",
+      "conflict shadow: family stopped for this session: over budget: private pass deadline exceeded during observation (rohanz) (swallowed)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-1)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-2)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-3)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-4)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-5)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-6)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-7)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-8)",
+      "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-9)"
+    ]
+  },
+  "reviewFollowup": {
+    "status": "Metadata-only byte reuse rejected and removed from final production code; these probes predate removal",
+    "byteOnly": {
+      "3": {
+        "participants": 3,
+        "byteOnly": true,
+        "sourceFiles": 1567,
+        "fixtureFiles": 1569,
+        "load": 0,
+        "unbounded": true,
+        "samples": [
+          {
+            "round": 0,
+            "ms": 11762.619583,
+            "cpu": {
+              "user": 5894595,
+              "system": 2331659
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 6,
+                "ms": 351.0808739999984
+              },
+              "disk scan": {
+                "calls": 17,
+                "ms": 9897.421086000002
+              },
+              "initial capture": {
+                "calls": 4,
+                "ms": 5525.818875
+              },
+              "private git read-tree": {
+                "calls": 7,
+                "ms": 39.29479100000026
+              },
+              "private git update-index": {
+                "calls": 7,
+                "ms": 46.804667999998856
+              },
+              "private git write-tree": {
+                "calls": 7,
+                "ms": 175.71499799999583
+              },
+              "private git commit-tree": {
+                "calls": 2,
+                "ms": 13.832333000002109
+              },
+              "headAnchor": {
+                "calls": 2,
+                "ms": 2812.064376000001
+              },
+              "private git rev-parse": {
+                "calls": 2,
+                "ms": 12.010667000000467
+              },
+              "private git update-ref": {
+                "calls": 2,
+                "ms": 12.581167000000278
+              },
+              "event": {
+                "calls": 2,
+                "ms": 5719.046708
+              },
+              "observation capture": {
+                "calls": 3,
+                "ms": 3897.7241250000006
+              },
+              "private git merge-tree": {
+                "calls": 1,
+                "ms": 6.334375000000364
+              },
+              "private git merge-base": {
+                "calls": 1,
+                "ms": 5.477958999999828
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 21.580167000000074
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 6037.007541999999
+              }
+            },
+            "jobs": [
+              {
+                "stage": "lifecycle spawn",
+                "ms": 3009.6411670000007
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2714.020458000001
+              },
+              {
+                "stage": "observation",
+                "ms": 6038.709249999998
+              }
+            ],
+            "diskPaths": 26673,
+            "actors": 3,
+            "halted": false
+          },
+          {
+            "round": 1,
+            "ms": 5767.498,
+            "cpu": {
+              "user": 1549775,
+              "system": 1254708
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 9,
+                "ms": 5100.070334000004
+              },
+              "observation capture": {
+                "calls": 3,
+                "ms": 3820.7290839999987
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 23.60070800000176
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 5765.378083
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 5767.460083000002
+              }
+            ],
+            "diskPaths": 14121,
+            "actors": 3,
+            "halted": false
+          },
+          {
+            "round": 2,
+            "ms": 5829.739874999999,
+            "cpu": {
+              "user": 1892382,
+              "system": 1461360
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 9,
+                "ms": 5160.576832999999
+              },
+              "observation capture": {
+                "calls": 3,
+                "ms": 3856.6202920000032
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 23.87029199999961
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 5827.41575
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 5829.560624999998
+              }
+            ],
+            "diskPaths": 14121,
+            "actors": 3,
+            "halted": false
+          }
+        ],
+        "logs": [
+          "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+        ]
+      },
+      "5": {
+        "participants": 5,
+        "byteOnly": true,
+        "sourceFiles": 1567,
+        "fixtureFiles": 1569,
+        "load": 0,
+        "unbounded": true,
+        "samples": [
+          {
+            "round": 0,
+            "ms": 21108.860916999998,
+            "cpu": {
+              "user": 7940885,
+              "system": 4366759
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 10,
+                "ms": 553.7251269999997
+              },
+              "disk scan": {
+                "calls": 31,
+                "ms": 17913.155956000002
+              },
+              "initial capture": {
+                "calls": 8,
+                "ms": 10741.520833000002
+              },
+              "private git read-tree": {
+                "calls": 13,
+                "ms": 73.66537700001027
+              },
+              "private git update-index": {
+                "calls": 13,
+                "ms": 88.30400000000009
+              },
+              "private git write-tree": {
+                "calls": 13,
+                "ms": 309.6710020000046
+              },
+              "private git commit-tree": {
+                "calls": 2,
+                "ms": 13.955540999999357
+              },
+              "headAnchor": {
+                "calls": 4,
+                "ms": 5476.913623999997
+              },
+              "private git rev-parse": {
+                "calls": 4,
+                "ms": 23.85679099999834
+              },
+              "private git update-ref": {
+                "calls": 4,
+                "ms": 24.162874999999985
+              },
+              "event": {
+                "calls": 4,
+                "ms": 11102.699042000002
+              },
+              "observation capture": {
+                "calls": 5,
+                "ms": 6448.745541000004
+              },
+              "private git merge-tree": {
+                "calls": 1,
+                "ms": 6.171207999999751
+              },
+              "private git merge-base": {
+                "calls": 1,
+                "ms": 5.878375000000233
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 22.299416999998357
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 9995.861583999998
+              }
+            },
+            "jobs": [
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2973.4905419999996
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2721.658541999999
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2714.299334000001
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2701.602584
+              },
+              {
+                "stage": "observation",
+                "ms": 9997.529584
+              }
+            ],
+            "diskPaths": 48639,
+            "actors": 5,
+            "halted": false
+          },
+          {
+            "round": 1,
+            "ms": 9711.901250000003,
+            "cpu": {
+              "user": 2804501,
+              "system": 2369397
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 15,
+                "ms": 8604.706208000003
+              },
+              "observation capture": {
+                "calls": 5,
+                "ms": 6452.062458
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 23.93183300000237
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 9709.275957999995
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 9711.740915999999
+              }
+            ],
+            "diskPaths": 23535,
+            "actors": 5,
+            "halted": false
+          },
+          {
+            "round": 2,
+            "ms": 9675.130082999996,
+            "cpu": {
+              "user": 2081517,
+              "system": 2055137
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 15,
+                "ms": 8573.054707999981
+              },
+              "observation capture": {
+                "calls": 5,
+                "ms": 6416.9811259999915
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 23.432042000000365
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 9672.563291999999
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 9674.972915999999
+              }
+            ],
+            "diskPaths": 23535,
+            "actors": 5,
+            "halted": false
+          }
+        ],
+        "logs": [
+          "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+        ]
+      },
+      "10": {
+        "participants": 10,
+        "byteOnly": true,
+        "sourceFiles": 1567,
+        "fixtureFiles": 1569,
+        "load": 0,
+        "unbounded": true,
+        "samples": [
+          {
+            "round": 0,
+            "ms": 45330.219625000005,
+            "cpu": {
+              "user": 13832879,
+              "system": 9936596
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 20,
+                "ms": 1104.164459000007
+              },
+              "disk scan": {
+                "calls": 66,
+                "ms": 38601.120627
+              },
+              "initial capture": {
+                "calls": 18,
+                "ms": 24384.930831000005
+              },
+              "private git read-tree": {
+                "calls": 28,
+                "ms": 166.37437299999146
+              },
+              "private git update-index": {
+                "calls": 28,
+                "ms": 187.67920800000502
+              },
+              "private git write-tree": {
+                "calls": 28,
+                "ms": 681.6837119999982
+              },
+              "private git commit-tree": {
+                "calls": 2,
+                "ms": 14.738125000003492
+              },
+              "headAnchor": {
+                "calls": 9,
+                "ms": 12474.606169000006
+              },
+              "private git rev-parse": {
+                "calls": 9,
+                "ms": 55.87829200001215
+              },
+              "private git update-ref": {
+                "calls": 9,
+                "ms": 56.159663999998884
+              },
+              "event": {
+                "calls": 9,
+                "ms": 25200.387498999997
+              },
+              "observation capture": {
+                "calls": 10,
+                "ms": 13017.845958999991
+              },
+              "private git merge-tree": {
+                "calls": 1,
+                "ms": 6.039042000003974
+              },
+              "private git merge-base": {
+                "calls": 1,
+                "ms": 5.755082999996375
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 22.19724999999744
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 20106.001167000002
+              }
+            },
+            "jobs": [
+              {
+                "stage": "lifecycle spawn",
+                "ms": 3160.9069999999992
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2735.106416999999
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2720.2448749999967
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2735.4149160000015
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2787.351749999998
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2762.418167
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2757.6031250000015
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2773.610375000004
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2788.424291999996
+              },
+              {
+                "stage": "observation",
+                "ms": 20108.461333
+              }
+            ],
+            "diskPaths": 103554,
+            "actors": 10,
+            "halted": false
+          },
+          {
+            "round": 1,
+            "ms": 19729.071083999996,
+            "cpu": {
+              "user": 5040563,
+              "system": 4913893
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 30,
+                "ms": 17497.601499999997
+              },
+              "observation capture": {
+                "calls": 10,
+                "ms": 12988.964375999974
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 24.066166999997222
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 19726.213583000004
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 19728.874417000006
+              }
+            ],
+            "diskPaths": 47070,
+            "actors": 10,
+            "halted": false
+          },
+          {
+            "round": 2,
+            "ms": 19624.932125000007,
+            "cpu": {
+              "user": 4876671,
+              "system": 4784846
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 30,
+                "ms": 17364.71720900001
+              },
+              "observation capture": {
+                "calls": 10,
+                "ms": 13055.422373999987
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 24.163249999997788
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 19621.954666999998
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 19624.743791999994
+              }
+            ],
+            "diskPaths": 47070,
+            "actors": 10,
+            "halted": false
+          }
+        ],
+        "logs": [
+          "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+        ]
+      },
+      "6": {
+        "participants": 6,
+        "byteOnly": true,
+        "sourceFiles": 1567,
+        "fixtureFiles": 1569,
+        "load": 0,
+        "unbounded": true,
+        "samples": [
+          {
+            "round": 0,
+            "ms": 29322.652834000004,
+            "cpu": {
+              "user": 9450457,
+              "system": 5813045
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 12,
+                "ms": 704.6112519999915
+              },
+              "disk scan": {
+                "calls": 38,
+                "ms": 25099.05320900001
+              },
+              "initial capture": {
+                "calls": 10,
+                "ms": 14885.219665999995
+              },
+              "private git read-tree": {
+                "calls": 16,
+                "ms": 106.78266600000097
+              },
+              "private git update-index": {
+                "calls": 16,
+                "ms": 117.27858399999968
+              },
+              "private git write-tree": {
+                "calls": 16,
+                "ms": 421.55283699999745
+              },
+              "private git commit-tree": {
+                "calls": 2,
+                "ms": 23.600917999998273
+              },
+              "headAnchor": {
+                "calls": 5,
+                "ms": 7232.166998999999
+              },
+              "private git rev-parse": {
+                "calls": 5,
+                "ms": 33.17120899999827
+              },
+              "private git update-ref": {
+                "calls": 5,
+                "ms": 33.21779199999946
+              },
+              "event": {
+                "calls": 5,
+                "ms": 15391.488750000004
+              },
+              "observation capture": {
+                "calls": 6,
+                "ms": 9632.595333000008
+              },
+              "private git merge-tree": {
+                "calls": 1,
+                "ms": 6.33845800000563
+              },
+              "private git merge-base": {
+                "calls": 1,
+                "ms": 5.965207999994163
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 26.25054100000125
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 13914.833583000003
+              }
+            },
+            "jobs": [
+              {
+                "stage": "lifecycle spawn",
+                "ms": 3255.584166999999
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 3116.576917000002
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 3146.2777910000004
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2990.7997080000023
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2895.9135840000017
+              },
+              {
+                "stage": "observation",
+                "ms": 13916.892041
+              }
+            ],
+            "diskPaths": 59622,
+            "actors": 6,
+            "halted": false
+          },
+          {
+            "round": 1,
+            "ms": 11705.910083000002,
+            "cpu": {
+              "user": 2202663,
+              "system": 2370312
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 18,
+                "ms": 10381.659087000007
+              },
+              "observation capture": {
+                "calls": 6,
+                "ms": 7739.457791000008
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 23.586959000000206
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 11703.80775
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 11705.873208000005
+              }
+            ],
+            "diskPaths": 28242,
+            "actors": 6,
+            "halted": false
+          },
+          {
+            "round": 2,
+            "ms": 11949.630249999995,
+            "cpu": {
+              "user": 3829661,
+              "system": 3301682
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 18,
+                "ms": 10602.766789999987
+              },
+              "observation capture": {
+                "calls": 6,
+                "ms": 7876.2906250000015
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 24.96333400000003
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 11947.316458000001
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 11949.594708000004
+              }
+            ],
+            "diskPaths": 28242,
+            "actors": 6,
+            "halted": false
+          }
+        ],
+        "logs": [
+          "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+        ]
+      }
+    },
+    "productionByteOnly": {
+      "4": {
+        "participants": 4,
+        "byteOnly": true,
+        "sourceFiles": 1567,
+        "fixtureFiles": 1569,
+        "load": 0,
+        "unbounded": false,
+        "samples": [
+          {
+            "round": 0,
+            "ms": 16510.829667,
+            "cpu": {
+              "user": 7005523,
+              "system": 3382851
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 8,
+                "ms": 456.9472089999981
+              },
+              "disk scan": {
+                "calls": 24,
+                "ms": 13980.524708999998
+              },
+              "initial capture": {
+                "calls": 6,
+                "ms": 8169.297456999998
+              },
+              "private git read-tree": {
+                "calls": 10,
+                "ms": 60.50787500000115
+              },
+              "private git update-index": {
+                "calls": 10,
+                "ms": 67.28158500000063
+              },
+              "private git write-tree": {
+                "calls": 10,
+                "ms": 240.98616799999945
+              },
+              "private git commit-tree": {
+                "calls": 2,
+                "ms": 13.967165999998542
+              },
+              "headAnchor": {
+                "calls": 3,
+                "ms": 4186.4259170000005
+              },
+              "private git rev-parse": {
+                "calls": 3,
+                "ms": 17.922873999999865
+              },
+              "private git update-ref": {
+                "calls": 3,
+                "ms": 18.45329099999981
+              },
+              "event": {
+                "calls": 3,
+                "ms": 8451.764001
+              },
+              "observation capture": {
+                "calls": 4,
+                "ms": 5228.619500000004
+              },
+              "private git merge-tree": {
+                "calls": 1,
+                "ms": 6.47045799999978
+              },
+              "private git merge-base": {
+                "calls": 1,
+                "ms": 5.842165999998542
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 22.653333999998722
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 8049.571041000001
+              }
+            },
+            "jobs": [
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2999.398875
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2721.934874999999
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2737.599083000001
+              },
+              {
+                "stage": "observation",
+                "ms": 8051.747625000002
+              }
+            ],
+            "diskPaths": 37656,
+            "actors": 4,
+            "halted": false
+          },
+          {
+            "round": 1,
+            "ms": 7802.169625000002,
+            "cpu": {
+              "user": 2220096,
+              "system": 1860422
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 12,
+                "ms": 6887.034332999996
+              },
+              "observation capture": {
+                "calls": 4,
+                "ms": 5166.814208000003
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 23.783791999998357
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 7799.809915999998
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 7802.119999999999
+              }
+            ],
+            "diskPaths": 18828,
+            "actors": 4,
+            "halted": false
+          },
+          {
+            "round": 2,
+            "ms": 7756.4182919999985,
+            "cpu": {
+              "user": 1956875,
+              "system": 1774426
+            },
+            "stages": {
+              "disk scan": {
+                "calls": 12,
+                "ms": 6864.477124999994
+              },
+              "observation capture": {
+                "calls": 4,
+                "ms": 5130.564459000001
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 23.800083000001905
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 7754.035458000002
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 7756.379208999999
+              }
+            ],
+            "diskPaths": 18828,
+            "actors": 4,
+            "halted": false
+          }
+        ],
+        "logs": [
+          "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+        ]
+      },
+      "5": {
+        "participants": 5,
+        "byteOnly": true,
+        "sourceFiles": 1567,
+        "fixtureFiles": 1569,
+        "load": 0,
+        "unbounded": false,
+        "samples": [
+          {
+            "round": 0,
+            "ms": 21199.522625,
+            "cpu": {
+              "user": 9223371,
+              "system": 4787184
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 10,
+                "ms": 562.4940019999976
+              },
+              "disk scan": {
+                "calls": 31,
+                "ms": 17963.493122999993
+              },
+              "initial capture": {
+                "calls": 8,
+                "ms": 10820.439249000001
+              },
+              "private git read-tree": {
+                "calls": 13,
+                "ms": 73.75949800000308
+              },
+              "private git update-index": {
+                "calls": 13,
+                "ms": 87.96408299999348
+              },
+              "private git write-tree": {
+                "calls": 13,
+                "ms": 318.10320499999943
+              },
+              "private git commit-tree": {
+                "calls": 2,
+                "ms": 13.994082999999591
+              },
+              "headAnchor": {
+                "calls": 4,
+                "ms": 5544.782083
+              },
+              "private git rev-parse": {
+                "calls": 4,
+                "ms": 23.954874999997628
+              },
+              "private git update-ref": {
+                "calls": 4,
+                "ms": 24.91570800000045
+              },
+              "event": {
+                "calls": 4,
+                "ms": 11190.209458999996
+              },
+              "observation capture": {
+                "calls": 5,
+                "ms": 6568.894457999999
+              },
+              "private git merge-tree": {
+                "calls": 1,
+                "ms": 5.955874999999651
+              },
+              "private git merge-base": {
+                "calls": 1,
+                "ms": 5.7771670000001905
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 22.343042000000423
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 9998.067917
+              }
+            },
+            "jobs": [
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2997.403457999999
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2726.0967500000006
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2716.6413330000014
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2758.498834000002
+              },
+              {
+                "stage": "observation",
+                "ms": 9999.765833000001
+              }
+            ],
+            "diskPaths": 48639,
+            "actors": 0,
+            "halted": true
+          }
+        ],
+        "logs": [
+          "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\"",
+          "conflict shadow: family stopped for this session: over budget: private pass deadline exceeded during observation (rohanz) (swallowed)",
+          "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-1)",
+          "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-2)",
+          "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-3)",
+          "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-4)"
+        ]
+      },
+      "6": {
+        "participants": 6,
+        "byteOnly": true,
+        "sourceFiles": 1567,
+        "fixtureFiles": 1569,
+        "load": 0,
+        "unbounded": false,
+        "samples": [
+          {
+            "round": 0,
+            "ms": 24583.130624999998,
+            "cpu": {
+              "user": 7809784,
+              "system": 4614252
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 12,
+                "ms": 665.0436250000039
+              },
+              "disk scan": {
+                "calls": 35,
+                "ms": 20872.44233100001
+              },
+              "initial capture": {
+                "calls": 10,
+                "ms": 14116.435625999997
+              },
+              "private git read-tree": {
+                "calls": 16,
+                "ms": 91.32595700000093
+              },
+              "private git update-index": {
+                "calls": 16,
+                "ms": 105.75066800000604
+              },
+              "private git write-tree": {
+                "calls": 16,
+                "ms": 387.2939589999951
+              },
+              "private git commit-tree": {
+                "calls": 2,
+                "ms": 14.287249999999403
+              },
+              "headAnchor": {
+                "calls": 5,
+                "ms": 6865.799375999999
+              },
+              "private git rev-parse": {
+                "calls": 5,
+                "ms": 30.480500000003303
+              },
+              "private git update-ref": {
+                "calls": 5,
+                "ms": 30.84391500000129
+              },
+              "event": {
+                "calls": 5,
+                "ms": 14570.899792000002
+              },
+              "observation capture": {
+                "calls": 6,
+                "ms": 7703.828001000002
+              },
+              "private git merge-tree": {
+                "calls": 1,
+                "ms": 6.652125000000524
+              },
+              "private git merge-base": {
+                "calls": 1,
+                "ms": 5.850291999999172
+              },
+              "private git rev-list": {
+                "calls": 1,
+                "ms": 23.53849999999875
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 9998.162374999996
+              }
+            },
+            "jobs": [
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2994.083292000001
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2943.1824579999993
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2876.12975
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2878.967375
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2889.628875000002
+              },
+              {
+                "stage": "observation",
+                "ms": 10000.005041
+              }
+            ],
+            "diskPaths": 54915,
+            "actors": 0,
+            "halted": true
+          }
+        ],
+        "logs": [
+          "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\"",
+          "conflict shadow: family stopped for this session: over budget: private pass deadline exceeded during observation (rohanz) (swallowed)",
+          "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-1)",
+          "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-2)",
+          "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-3)",
+          "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-4)",
+          "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-5)"
+        ]
+      }
+    },
+    "fiveProductionSurvivalAssertion": "Failed: family halted during its first observation at the ten-second production deadline",
+    "nativeObservations": [
+      {
+        "label": "native mmap timestamp timing",
+        "value": [
+          {
+            "mode": "msync",
+            "before": "16777229:557180955:33188:4096:1795455510686007189:1795455510686007189",
+            "afterWrite": "16777229:557180955:33188:4096:1795455510686007189:1795455510686007189",
+            "sameAfterWrite": true,
+            "firstChangeMs": 53.8134170000003,
+            "observedForMs": 53.827125000000706,
+            "finalStamp": "16777229:557180955:33188:4096:1795455514074214804:1795455514074214804",
+            "diskFirstByte": "b",
+            "events": [
+              {
+                "event": "write",
+                "ms": 1.3054590000001554,
+                "stamp": "16777229:557180955:33188:4096:1795455510686007189:1795455510686007189"
+              },
+              {
+                "event": "msync",
+                "ms": 53.771584000000075,
+                "stamp": "16777229:557180955:33188:4096:1795455514074214804:1795455514074214804"
+              }
+            ]
+          },
+          {
+            "mode": "munmap",
+            "before": "16777229:557180963:33188:4096:1795455514076649361:1795455514076649361",
+            "afterWrite": "16777229:557180963:33188:4096:1795455514076649361:1795455514076649361",
+            "sameAfterWrite": true,
+            "firstChangeMs": 53.10433400000056,
+            "observedForMs": 53.41125000000011,
+            "finalStamp": "16777229:557180963:33188:4096:1795455514076649361:1795455517462127043",
+            "diskFirstByte": "b",
+            "events": [
+              {
+                "event": "write",
+                "ms": 0.5716670000001614,
+                "stamp": "16777229:557180963:33188:4096:1795455514076649361:1795455514076649361"
+              },
+              {
+                "event": "munmap",
+                "ms": 52.91620899999998,
+                "stamp": "16777229:557180963:33188:4096:1795455514076649361:1795455517462127043"
+              },
+              {
+                "event": "close",
+                "ms": 53.36483399999997,
+                "stamp": "16777229:557180963:33188:4096:1795455514076649361:1795455517462127043"
+              }
+            ]
+          },
+          {
+            "mode": "periodic",
+            "before": "16777229:557180965:33188:4096:1795455517464403683:1795455517464403683",
+            "afterWrite": "16777229:557180965:33188:4096:1795455517464403683:1795455517464403683",
+            "sameAfterWrite": true,
+            "firstChangeMs": null,
+            "observedForMs": 120090.256958,
+            "finalStamp": "16777229:557180965:33188:4096:1795455517464403683:1795455517464403683",
+            "diskFirstByte": "b",
+            "events": [
+              {
+                "event": "write",
+                "ms": 0.8064159999994445,
+                "stamp": "16777229:557180965:33188:4096:1795455517464403683:1795455517464403683"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "label": "native mmap direct result guard",
+        "value": {
+          "sameStamp": true,
+          "rows": [],
+          "pending": 0,
+          "logs": [
+            "conflict shadow: pairs=3 agreements=0 disagreements=0 skipped=waiting for 60-second stability passMs=483 participant=\"rohanz\"",
+            "conflict shadow: observation unavailable: inputs moved (rohanz+d)",
+            "conflict shadow: observation unavailable: inputs moved (rohanz+u)",
+            "conflict shadow: pairs=2 agreements=0 disagreements=0 skipped=inputs moved passMs=217 participant=\"rohanz\"",
+            "conflict shadow: pairs=2 agreements=0 disagreements=0 skipped=inputs moved passMs=218 participant=\"rohanz\""
+          ]
+        }
+      },
+      {
+        "label": "native mmap rename wrong row",
+        "value": {
+          "sameStamp": true,
+          "cachedPaths": [],
+          "byteFreshPaths": [
+            "shared.txt"
+          ],
+          "slots": [
+            {
+              "path": "shared.txt",
+              "settled": "conflict"
+            },
+            {
+              "path": "shared.txt",
+              "settled": "conflict"
+            }
+          ],
+          "rows": [
+            {
+              "time": "2026-11-23T17:41:49.770Z",
+              "participants": [
+                "rohanz+d",
+                "rohanz+u"
+              ],
+              "path": "shared.txt",
+              "today": "conflict",
+              "shadow": "clean",
+              "observation": "60-second-stable-heuristic",
+              "stableForMs": 60001,
+              "snapshots": [
+                "76c0291ac874fc6c7f5aa258cc2cbe5bd0bfb0eb",
+                "cf439a927c86a227b7d15cd6417425d823bddb74"
+              ],
+              "bases": [
+                "ca7ee813dcdcc8c25bcf4cc239a1a631e1ae11d7"
+              ],
+              "events": [
+                [
+                  "head:131977354db18d0c3347f770bbff24fd5738d21e",
+                  "spawn:ca7ee813dcdcc8c25bcf4cc239a1a631e1ae11d7",
+                  "observation:76c0291ac874fc6c7f5aa258cc2cbe5bd0bfb0eb"
+                ],
+                [
+                  "head:131977354db18d0c3347f770bbff24fd5738d21e",
+                  "spawn:ca7ee813dcdcc8c25bcf4cc239a1a631e1ae11d7",
+                  "observation:cf439a927c86a227b7d15cd6417425d823bddb74"
+                ]
+              ]
+            }
+          ],
+          "pending": 1,
+          "logs": [
+            "conflict shadow: pairs=3 agreements=0 disagreements=0 skipped=waiting for 60-second stability passMs=463 participant=\"rohanz\"",
+            "conflict shadow: pairs=3 agreements=0 disagreements=1 skipped=none passMs=223 participant=\"rohanz\""
+          ]
+        }
+      },
+      {
+        "label": "native mmap stale quiet pair",
+        "value": {
+          "sameStamp": true,
+          "reusedSameCapture": true,
+          "byteFreshPaths": [
+            "shared.txt"
+          ],
+          "rows": [],
+          "pending": 0,
+          "logs": [
+            "conflict shadow: pairs=3 agreements=0 disagreements=0 skipped=none passMs=425 participant=\"rohanz\"",
+            "conflict shadow: pairs=3 agreements=0 disagreements=0 skipped=none passMs=212 participant=\"rohanz\""
+          ]
+        }
+      },
+      {
+        "label": "native mmap rename wrong row",
+        "value": {
+          "sameStamp": true,
+          "cachedPaths": [],
+          "byteFreshPaths": [
+            "shared.txt"
+          ],
+          "slots": [
+            {
+              "path": "shared.txt",
+              "settled": "conflict"
+            },
+            {
+              "path": "shared.txt",
+              "settled": "conflict"
+            }
+          ],
+          "rows": [
+            {
+              "time": "2026-11-23T17:46:29.832Z",
+              "participants": [
+                "rohanz+d",
+                "rohanz+u"
+              ],
+              "path": "shared.txt",
+              "today": "conflict",
+              "shadow": "clean",
+              "observation": "60-second-stable-heuristic",
+              "stableForMs": 60001,
+              "snapshots": [
+                "ba42d2a26d20999f68d053768c3787454263020a",
+                "0b1549d091295623da538b45d54971bf9b6b3995"
+              ],
+              "bases": [
+                "cdb36f7fca5d3018fdf92322ea9d8d35ef7f85b3"
+              ],
+              "events": [
+                [
+                  "head:7833bfc149387613e24bc45ccfee707cd1ad9695",
+                  "spawn:cdb36f7fca5d3018fdf92322ea9d8d35ef7f85b3",
+                  "observation:ba42d2a26d20999f68d053768c3787454263020a"
+                ],
+                [
+                  "head:7833bfc149387613e24bc45ccfee707cd1ad9695",
+                  "spawn:cdb36f7fca5d3018fdf92322ea9d8d35ef7f85b3",
+                  "observation:0b1549d091295623da538b45d54971bf9b6b3995"
+                ]
+              ]
+            }
+          ],
+          "pending": 1,
+          "logs": [
+            "conflict shadow: pairs=3 agreements=0 disagreements=0 skipped=waiting for 60-second stability passMs=486 participant=\"rohanz\"",
+            "conflict shadow: pairs=3 agreements=0 disagreements=1 skipped=none passMs=229 participant=\"rohanz\""
+          ]
+        }
+      },
+      {
+        "label": "native mmap rename false agreement",
+        "value": {
+          "byteFreshPaths": [
+            "shared.txt"
+          ],
+          "summary": "conflict shadow: pairs=3 agreements=1 disagreements=0 skipped=none passMs=227 participant=\"rohanz\""
+        }
+      }
+    ],
+    "baselineCaptureComparisonBeforeRemoval": {
+      "platform": "darwin",
+      "localCacheSupported": true,
+      "sameStat": true,
+      "diskFirstByte": "c",
+      "currentValid": true,
+      "baselineValid": false,
+      "reusedSameCapture": true,
+      "cacheOid": "e5dee63fadd3d10aa809ba56a1fb7e7ce356cc9a",
+      "diskOid": "3de0db2489a523a744c6cfbf6486228020623a92"
+    },
+    "conditions": "Native macOS/APFS, Node22.23.4, Python3.14.6. Primary byte-only 3/5/10 probes sequential/isolated. Six-participant startup briefly overlapped typecheck; quiet rounds did not. Episode clock advanced through fixture seam; timestamp wait used 120s wall time."
+  },
+  "rejectedMetadata": {
+    "prototypeThreeMetadataCache": {
+      "participants": 3,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 6962.384750000001,
+          "cpu": {
+            "user": 5402793,
+            "system": 1468988
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 10,
+              "ms": 562.2322509999967
+            },
+            "disk scan": {
+              "calls": 8,
+              "ms": 4840.641125999998
+            },
+            "initial capture": {
+              "calls": 4,
+              "ms": 3763.219789999999
+            },
+            "private git read-tree": {
+              "calls": 7,
+              "ms": 44.846041000000696
+            },
+            "private git update-index": {
+              "calls": 7,
+              "ms": 49.525126999999884
+            },
+            "private git write-tree": {
+              "calls": 7,
+              "ms": 176.82820799999809
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 14.819040999999743
+            },
+            "headAnchor": {
+              "calls": 2,
+              "ms": 1610.9429999999993
+            },
+            "private git rev-parse": {
+              "calls": 2,
+              "ms": 12.266958000001068
+            },
+            "private git update-ref": {
+              "calls": 2,
+              "ms": 13.500832999999147
+            },
+            "event": {
+              "calls": 2,
+              "ms": 3965.1302079999987
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 2312.991665999998
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 5.987250000000131
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 5.7381659999991825
+            },
+            "private git rev-list": {
+              "calls": 2,
+              "ms": 41.83087500000147
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 2990.808416
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2384.95475
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1584.5479999999989
+            },
+            {
+              "stage": "observation",
+              "ms": 2992.743542
+            }
+          ],
+          "diskPaths": 12552,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 930.631625,
+          "cpu": {
+            "user": 412047,
+            "system": 152985
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 3,
+              "ms": 0.07983299999978044
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 362.5749590000014
+            },
+            "private git ls-tree": {
+              "calls": 3,
+              "ms": 156.89879299999848
+            },
+            "private git rev-list": {
+              "calls": 3,
+              "ms": 66.32528999999886
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 928.0770840000005
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 930.5868750000009
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 910.5762080000004,
+          "cpu": {
+            "user": 310944,
+            "system": 141151
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 3,
+              "ms": 0.07954199999949196
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 361.94583299999977
+            },
+            "private git ls-tree": {
+              "calls": 3,
+              "ms": 156.1768329999977
+            },
+            "private git rev-list": {
+              "calls": 3,
+              "ms": 66.86508400000093
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 908.2532090000004
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 910.549833000001
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 3,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "prototypeTenColdCaptureCutoff": {
+      "participants": 10,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 26009.752125,
+          "cpu": {
+            "user": 9130907,
+            "system": 5104382
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 37,
+              "ms": 1977.0121700000127
+            },
+            "disk scan": {
+              "calls": 28,
+              "ms": 19563.768083999996
+            },
+            "initial capture": {
+              "calls": 18,
+              "ms": 15182.468788999993
+            },
+            "private git read-tree": {
+              "calls": 27,
+              "ms": 161.56303900001512
+            },
+            "private git update-index": {
+              "calls": 27,
+              "ms": 179.0822499999922
+            },
+            "private git write-tree": {
+              "calls": 27,
+              "ms": 644.0987479999894
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 15.713666999996349
+            },
+            "headAnchor": {
+              "calls": 9,
+              "ms": 7015.763038999994
+            },
+            "private git rev-parse": {
+              "calls": 9,
+              "ms": 54.79029100000116
+            },
+            "private git update-ref": {
+              "calls": 9,
+              "ms": 55.63112500000716
+            },
+            "event": {
+              "calls": 9,
+              "ms": 15984.028833999997
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 9005.071957
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 9999.303541000001
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1926.9100829999988
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1812.6434579999986
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1750.6898330000004
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1739.570584000001
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1740.3198330000014
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1745.838917000001
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1749.9101670000018
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1771.465250000001
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1769.358750000003
+            },
+            {
+              "stage": "observation",
+              "ms": 10000.903207999996
+            }
+          ],
+          "diskPaths": 43932,
+          "actors": 0,
+          "halted": true
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\"",
+        "conflict shadow: family stopped for this session: over budget: private pass deadline exceeded during observation (rohanz) (swallowed)",
+        "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-1)",
+        "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-2)",
+        "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-3)",
+        "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-4)",
+        "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-5)",
+        "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-6)",
+        "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-7)",
+        "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-8)",
+        "conflict shadow: unmodelled history: family stopped: over budget: private pass deadline exceeded during observation (rohanz+worker-9)"
+      ]
+    },
+    "prototypeTenSeededCapture": {
+      "participants": 10,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 18560.956875000003,
+          "cpu": {
+            "user": 7517591,
+            "system": 3501339
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 29,
+              "ms": 1558.559455999999
+            },
+            "disk scan": {
+              "calls": 28,
+              "ms": 11165.56233799999
+            },
+            "initial capture": {
+              "calls": 18,
+              "ms": 13483.918125000004
+            },
+            "private git read-tree": {
+              "calls": 28,
+              "ms": 160.63749700000335
+            },
+            "private git update-index": {
+              "calls": 28,
+              "ms": 184.66720700000587
+            },
+            "private git write-tree": {
+              "calls": 28,
+              "ms": 659.2947089999834
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 14.657874999997148
+            },
+            "headAnchor": {
+              "calls": 9,
+              "ms": 7000.995624999996
+            },
+            "private git rev-parse": {
+              "calls": 9,
+              "ms": 54.425248999999894
+            },
+            "private git update-ref": {
+              "calls": 9,
+              "ms": 55.867458999997325
+            },
+            "event": {
+              "calls": 9,
+              "ms": 14281.040084000004
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 1811.0206239999934
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.174666999999317
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 5.911416000002646
+            },
+            "private git rev-list": {
+              "calls": 44,
+              "ms": 915.5983329999872
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 4255.924458999998
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1757.511916999998
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1621.3305
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1534.0139589999999
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1558.1600410000028
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1575.9275830000006
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1587.7721250000031
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1586.4633749999994
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1546.266416999999
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1535.3193749999991
+            },
+            {
+              "stage": "observation",
+              "ms": 4257.904583999996
+            }
+          ],
+          "diskPaths": 29811,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 3319.571250000001,
+          "cpu": {
+            "user": 685581,
+            "system": 498666
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 10,
+              "ms": 0.2237920000043232
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 1193.858997000003
+            },
+            "private git ls-tree": {
+              "calls": 10,
+              "ms": 521.6184590000121
+            },
+            "private git rev-list": {
+              "calls": 45,
+              "ms": 951.1577060000345
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 3316.961750000002
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 3319.5436249999984
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 3291.9246669999993,
+          "cpu": {
+            "user": 605582,
+            "system": 470844
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 10,
+              "ms": 0.20954299999721115
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 1188.4693750000006
+            },
+            "private git ls-tree": {
+              "calls": 10,
+              "ms": 527.0750019999905
+            },
+            "private git rev-list": {
+              "calls": 45,
+              "ms": 931.1013290000192
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 3289.487874999999
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 3291.9044159999976
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 10,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "incrementalBeforeFinalPointerGuardThree": {
+      "participants": 3,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 5410.444334,
+          "cpu": {
+            "user": 4775451,
+            "system": 1108282
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 6,
+              "ms": 355.1671660000002
+            },
+            "disk scan": {
+              "calls": 8,
+              "ms": 3557.5809139999983
+            },
+            "initial capture": {
+              "calls": 4,
+              "ms": 3491.011792000001
+            },
+            "private git read-tree": {
+              "calls": 7,
+              "ms": 39.80083400000149
+            },
+            "private git update-index": {
+              "calls": 7,
+              "ms": 47.89208399999825
+            },
+            "private git write-tree": {
+              "calls": 7,
+              "ms": 169.36937399999806
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 14.55945900000006
+            },
+            "headAnchor": {
+              "calls": 2,
+              "ms": 1629.1134999999995
+            },
+            "private git rev-parse": {
+              "calls": 2,
+              "ms": 12.040500000000975
+            },
+            "private git update-ref": {
+              "calls": 2,
+              "ms": 12.419874000001073
+            },
+            "event": {
+              "calls": 2,
+              "ms": 3686.6480840000004
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 1290.388876000001
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 5.995166999999128
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 6.193749999998545
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 22.278707999999824
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 1717.0223750000005
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2052.405125
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1639.217334
+            },
+            {
+              "stage": "observation",
+              "ms": 1718.7036659999994
+            }
+          ],
+          "diskPaths": 8589,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 420.6493750000009,
+          "cpu": {
+            "user": 137256,
+            "system": 85535
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 3,
+              "ms": 167.95149899999888
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.612166999999317
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 418.5295839999999
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 420.6149580000001
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 434.9812920000004,
+          "cpu": {
+            "user": 124751,
+            "system": 89032
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 3,
+              "ms": 166.29929300000185
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.608417000001282
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 432.88629200000105
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 434.9567499999994
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 3,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "incrementalBeforeFinalPointerGuardTen": {
+      "participants": 10,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 19688.442125,
+          "cpu": {
+            "user": 7607970,
+            "system": 3598266
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 20,
+              "ms": 1089.6950409999881
+            },
+            "disk scan": {
+              "calls": 28,
+              "ms": 12993.961039999998
+            },
+            "initial capture": {
+              "calls": 18,
+              "ms": 15350.73520800001
+            },
+            "private git read-tree": {
+              "calls": 28,
+              "ms": 166.68246100001124
+            },
+            "private git update-index": {
+              "calls": 28,
+              "ms": 187.46050000000832
+            },
+            "private git write-tree": {
+              "calls": 28,
+              "ms": 658.3745390000004
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 14.195374999995693
+            },
+            "headAnchor": {
+              "calls": 9,
+              "ms": 7103.326291000001
+            },
+            "private git rev-parse": {
+              "calls": 9,
+              "ms": 54.622957000003225
+            },
+            "private git update-ref": {
+              "calls": 9,
+              "ms": 55.719709000000876
+            },
+            "event": {
+              "calls": 9,
+              "ms": 16143.251460000001
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 2168.8961270000073
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.617540999999619
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 6.1130839999968885
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 26.238208000002487
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 3521.258082999997
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1955.4484169999978
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1828.4959170000002
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1776.5438749999994
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1770.8381249999984
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1768.0863329999993
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1766.3580000000002
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1755.8639580000017
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1787.8335829999996
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1755.4147909999992
+            },
+            {
+              "stage": "observation",
+              "ms": 3523.300000000003
+            }
+          ],
+          "diskPaths": 29811,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 1470.200917000002,
+          "cpu": {
+            "user": 474183,
+            "system": 294626
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 10,
+              "ms": 567.2511669999949
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 24.77333300000464
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 1467.6303750000006
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 1470.1705419999998
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 1449.677042000003,
+          "cpu": {
+            "user": 448827,
+            "system": 284630
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 10,
+              "ms": 561.5185839999904
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 24.240082999996957
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 1447.1197080000056
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 1449.657124999998
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 10,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "incrementalBeforeFingerprintDigestThree": {
+      "participants": 3,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 5685.8121249999995,
+          "cpu": {
+            "user": 4815085,
+            "system": 1180570
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 6,
+              "ms": 354.9367899999979
+            },
+            "disk scan": {
+              "calls": 8,
+              "ms": 3813.8041270000012
+            },
+            "initial capture": {
+              "calls": 4,
+              "ms": 3626.1018749999967
+            },
+            "private git read-tree": {
+              "calls": 7,
+              "ms": 41.88591600000018
+            },
+            "private git update-index": {
+              "calls": 7,
+              "ms": 47.61345699999765
+            },
+            "private git write-tree": {
+              "calls": 7,
+              "ms": 172.19758399999864
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 14.79725099999905
+            },
+            "headAnchor": {
+              "calls": 2,
+              "ms": 1651.824501000001
+            },
+            "private git rev-parse": {
+              "calls": 2,
+              "ms": 12.895790999999008
+            },
+            "private git update-ref": {
+              "calls": 2,
+              "ms": 12.87604200000169
+            },
+            "event": {
+              "calls": 2,
+              "ms": 3826.3679159999992
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 1417.4407919999994
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.3790829999998095
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 6.121124999999665
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 22.958834000000934
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 1852.7823750000007
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2182.499500000001
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1648.2886249999992
+            },
+            {
+              "stage": "observation",
+              "ms": 1854.9162500000002
+            }
+          ],
+          "diskPaths": 9443,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 417.8657919999987,
+          "cpu": {
+            "user": 94120,
+            "system": 78044
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 3,
+              "ms": 168.01950000000033
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.50445900000159
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 415.5017079999998
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 417.8335420000003
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 425.0117500000015,
+          "cpu": {
+            "user": 129669,
+            "system": 88522
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 3,
+              "ms": 173.43775000000096
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.684957999999824
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 422.8982500000002
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 424.985917
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 3,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "incrementalBeforeFingerprintDigestTen": {
+      "participants": 10,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 19822.298457999997,
+          "cpu": {
+            "user": 8022049,
+            "system": 3761369
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 20,
+              "ms": 1106.9239619999971
+            },
+            "disk scan": {
+              "calls": 28,
+              "ms": 13037.31475200001
+            },
+            "initial capture": {
+              "calls": 18,
+              "ms": 15494.124167999995
+            },
+            "private git read-tree": {
+              "calls": 28,
+              "ms": 167.43800000000556
+            },
+            "private git update-index": {
+              "calls": 28,
+              "ms": 196.7962510000143
+            },
+            "private git write-tree": {
+              "calls": 28,
+              "ms": 685.9945419999967
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 15.142916000004334
+            },
+            "headAnchor": {
+              "calls": 9,
+              "ms": 7234.577497999995
+            },
+            "private git rev-parse": {
+              "calls": 9,
+              "ms": 56.59479099999953
+            },
+            "private git update-ref": {
+              "calls": 9,
+              "ms": 62.66804300000149
+            },
+            "event": {
+              "calls": 9,
+              "ms": 16330.041665000002
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 2135.147041000011
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.477292000003217
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 5.955333000005339
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 26.464167000005546
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 3468.503208000002
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1991.8812920000018
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1844.050374999999
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1754.8420829999995
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1797.8849999999984
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1839.3910419999993
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1772.0551250000026
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1768.6227910000016
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1761.5642499999994
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1820.9057500000017
+            },
+            {
+              "stage": "observation",
+              "ms": 3470.8123339999984
+            }
+          ],
+          "diskPaths": 29811,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 1451.5059580000016,
+          "cpu": {
+            "user": 401937,
+            "system": 266749
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 10,
+              "ms": 565.6841240000067
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.83720899999753
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 1448.7541249999995
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 1451.4810419999994
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 1465.1403749999954,
+          "cpu": {
+            "user": 452040,
+            "system": 296991
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 10,
+              "ms": 575.0020009999935
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 24.03887499999837
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 1462.6423330000034
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 1465.123249999997
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 10,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "incrementalFinalThree": {
+      "participants": 3,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 4857.675791000001,
+          "cpu": {
+            "user": 4527932,
+            "system": 997509
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 6,
+              "ms": 328.01108399999976
+            },
+            "disk scan": {
+              "calls": 7,
+              "ms": 3011.2022069999994
+            },
+            "initial capture": {
+              "calls": 4,
+              "ms": 3198.2306670000007
+            },
+            "private git read-tree": {
+              "calls": 7,
+              "ms": 42.234207999998034
+            },
+            "private git update-index": {
+              "calls": 7,
+              "ms": 48.683334000002105
+            },
+            "private git write-tree": {
+              "calls": 7,
+              "ms": 174.60420800000156
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 14.882915999999568
+            },
+            "headAnchor": {
+              "calls": 2,
+              "ms": 1675.551958000001
+            },
+            "private git rev-parse": {
+              "calls": 2,
+              "ms": 14.745624999998654
+            },
+            "private git update-ref": {
+              "calls": 2,
+              "ms": 13.934000000000196
+            },
+            "event": {
+              "calls": 2,
+              "ms": 3406.136208
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 1030.9557089999998
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.341707999999926
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 5.801749999998719
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 21.53283399999964
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 1445.460916
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1740.7237080000004
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1669.4378749999996
+            },
+            {
+              "stage": "observation",
+              "ms": 1447.3865000000005
+            }
+          ],
+          "diskPaths": 7845,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 408.1969169999993,
+          "cpu": {
+            "user": 86623,
+            "system": 77478
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 3,
+              "ms": 167.8999160000003
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.7377919999999
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 406.028792000001
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 408.1634580000009
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 413.38083299999926,
+          "cpu": {
+            "user": 117373,
+            "system": 87556
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 3,
+              "ms": 169.48325000000114
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.407584000000497
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 411.384
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 413.36045899999954
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 3,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "incrementalFinalTen": {
+      "participants": 10,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 19784.229249999997,
+          "cpu": {
+            "user": 9707546,
+            "system": 4206606
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 20,
+              "ms": 1081.7855419999978
+            },
+            "disk scan": {
+              "calls": 28,
+              "ms": 13133.12433200001
+            },
+            "initial capture": {
+              "calls": 18,
+              "ms": 15547.606125000008
+            },
+            "private git read-tree": {
+              "calls": 28,
+              "ms": 162.2111240000013
+            },
+            "private git update-index": {
+              "calls": 28,
+              "ms": 190.68200299998716
+            },
+            "private git write-tree": {
+              "calls": 28,
+              "ms": 669.8893760000137
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 15.0313750000023
+            },
+            "headAnchor": {
+              "calls": 9,
+              "ms": 7186.7065420000035
+            },
+            "private git rev-parse": {
+              "calls": 9,
+              "ms": 57.011373999997886
+            },
+            "private git update-ref": {
+              "calls": 9,
+              "ms": 57.687707999997656
+            },
+            "event": {
+              "calls": 9,
+              "ms": 16356.125
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 2170.375250000019
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.828792000000249
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 6.367417000001296
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 31.278791000004276
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 3402.8997500000005
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1979.0265419999996
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1856.9509579999976
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1802.9516249999979
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1797.520916999998
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1803.6481660000027
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1770.859375
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1786.6990409999999
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1792.8845409999994
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 1788.1174589999973
+            },
+            {
+              "stage": "observation",
+              "ms": 3405.2219159999986
+            }
+          ],
+          "diskPaths": 29811,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 1352.3355420000007,
+          "cpu": {
+            "user": 363225,
+            "system": 270413
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 10,
+              "ms": 567.3894169999985
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.72504199999821
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 1349.7814170000056
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 1352.3092499999984
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 1355.703125,
+          "cpu": {
+            "user": 342671,
+            "system": 280715
+          },
+          "stages": {
+            "observation capture": {
+              "calls": 10,
+              "ms": 570.6498359999969
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.54833399999916
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 1353.1405000000013
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 1355.6836670000048
+            }
+          ],
+          "diskPaths": 0,
+          "actors": 10,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "validation": {
+      "defaultShadow": {
+        "filesPassed": 21,
+        "filesSkipped": 7,
+        "testsPassed": 140,
+        "testsSkipped": 137,
+        "seconds": 114.56
+      },
+      "scaleShadow": {
+        "filesPassed": 17,
+        "testsPassed": 238,
+        "seconds": 1111.09
+      },
+      "typecheck": "passed on final source",
+      "namedPreview": {
+        "peer": "rohanz+claude",
+        "filesPassed": 4,
+        "testsPassed": 22,
+        "seconds": 20.01,
+        "peerChanges": "none",
+        "coverage": "complete for selected peer"
+      },
+      "interruptedScaleAttempts": "Two deliberately interrupted for pointer-control and fingerprint updates; not counted as passing evidence",
+      "nativePlatform": "macOS only; no model processes or six-hour live run"
+    },
+    "conditions": {
+      "baseline": "f734bffaaaf1bda75755adbe07271fc59ada28de",
+      "os": "macOS 26.5 Darwin arm64",
+      "filesystem": "local APFS",
+      "node": "v22.23.4",
+      "git": "2.45.2",
+      "inheritedNice": 10,
+      "fixtureHosts": "synthetic; real Git worktrees and registry",
+      "measurementsSequential": true,
+      "notes": "Final 3 and 10 participant samples used production deadlines, no synthetic CPU load, one Vitest worker, before the final serial scale suite. Startup drain excludes normal five-second scheduler gaps. No model hosts were launched."
+    }
+  },
+  "rejectedBatch": {
+    "conditions": {
+      "source": "Final code with no metadata reuse, disk-fact cache or filesystem-type probe",
+      "fixtureFiles": 1569,
+      "platform": "macOS26.5/Darwin arm64/APFS",
+      "node": "v22.23.4",
+      "git": "2.45.2",
+      "nice": 10,
+      "measurementConcurrency": "Sequential with one Vitest worker; no concurrent worker-launched checks",
+      "hosts": "synthetic; no model processes",
+      "deadlines": "3 uses production; 5/10 extended fixture mode to expose full quiet cost"
+    },
+    "3": {
+      "participants": 3,
+      "byteOnly": true,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 11946.926583,
+          "cpu": {
+            "user": 7145359,
+            "system": 2925400
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 1,
+              "ms": 82.24424999999974
+            },
+            "disk scan": {
+              "calls": 17,
+              "ms": 9965.752873999998
+            },
+            "initial capture": {
+              "calls": 4,
+              "ms": 5606.741999000001
+            },
+            "private git read-tree": {
+              "calls": 7,
+              "ms": 39.183915999996316
+            },
+            "private git update-index": {
+              "calls": 7,
+              "ms": 48.62704300000405
+            },
+            "private git write-tree": {
+              "calls": 7,
+              "ms": 176.05933299999924
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 14.185374999999112
+            },
+            "headAnchor": {
+              "calls": 2,
+              "ms": 2824.2776249999997
+            },
+            "private git rev-parse": {
+              "calls": 2,
+              "ms": 13.135291000000507
+            },
+            "private git update-ref": {
+              "calls": 2,
+              "ms": 12.98858300000029
+            },
+            "event": {
+              "calls": 2,
+              "ms": 5805.618209
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 4077.815208000002
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.235082999999577
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 5.915208000000348
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 21.69787499999984
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 6134.054083000001
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 3067.7767080000003
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2742.7908750000006
+            },
+            {
+              "stage": "observation",
+              "ms": 6136.225541999998
+            }
+          ],
+          "diskPaths": 26673,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 5921.833333000002,
+          "cpu": {
+            "user": 1399645,
+            "system": 1305430
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 9,
+              "ms": 5115.851291000003
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 3996.075667000001
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.370083000001614
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 5916.326709000001
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 5921.785750000003
+            }
+          ],
+          "diskPaths": 14121,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 5984.1345,
+          "cpu": {
+            "user": 2235014,
+            "system": 1712647
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 9,
+              "ms": 5182.077499999999
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 4023.7085399999996
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 23.896875000002183
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 5981.817374999999
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 5984.092417
+            }
+          ],
+          "diskPaths": 14121,
+          "actors": 3,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "5": {
+      "participants": 5,
+      "byteOnly": true,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": true,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 21465.103709000003,
+          "cpu": {
+            "user": 8304608,
+            "system": 4659125
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 1,
+              "ms": 79.40008300000045
+            },
+            "disk scan": {
+              "calls": 31,
+              "ms": 17998.711584000008
+            },
+            "initial capture": {
+              "calls": 8,
+              "ms": 11045.787834000006
+            },
+            "private git read-tree": {
+              "calls": 13,
+              "ms": 72.94087599999693
+            },
+            "private git update-index": {
+              "calls": 13,
+              "ms": 88.54799899999307
+            },
+            "private git write-tree": {
+              "calls": 13,
+              "ms": 313.57666799999606
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 14.724208999999973
+            },
+            "headAnchor": {
+              "calls": 4,
+              "ms": 5613.1524999999965
+            },
+            "private git rev-parse": {
+              "calls": 4,
+              "ms": 24.082707999996273
+            },
+            "private git update-ref": {
+              "calls": 4,
+              "ms": 24.72229299999526
+            },
+            "event": {
+              "calls": 4,
+              "ms": 11413.531958000001
+            },
+            "observation capture": {
+              "calls": 5,
+              "ms": 6645.9940409999945
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.275875000002998
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 5.691165999996883
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 21.818790999997873
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 10040.549584
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 3078.5803749999995
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2820.822082999999
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2782.562667
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2740.026084000001
+            },
+            {
+              "stage": "observation",
+              "ms": 10042.578833000003
+            }
+          ],
+          "diskPaths": 48639,
+          "actors": 5,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 10027.751834000002,
+          "cpu": {
+            "user": 3501627,
+            "system": 2829789
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 15,
+              "ms": 8675.774375999987
+            },
+            "observation capture": {
+              "calls": 5,
+              "ms": 6807.857958999997
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 24.31300000000192
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 10025.403666000002
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 10027.712791000002
+            }
+          ],
+          "diskPaths": 23535,
+          "actors": 5,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 9930.94775,
+          "cpu": {
+            "user": 2312579,
+            "system": 2301620
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 15,
+              "ms": 8593.772914999994
+            },
+            "observation capture": {
+              "calls": 5,
+              "ms": 6730.393708999996
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 22.94383299999754
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 9925.181292000001
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 9930.800374999999
+            }
+          ],
+          "diskPaths": 23535,
+          "actors": 5,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "10": {
+      "participants": 10,
+      "byteOnly": true,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": true,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 45945.451792,
+          "cpu": {
+            "user": 15431722,
+            "system": 11129280
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 1,
+              "ms": 82.609457999999
+            },
+            "disk scan": {
+              "calls": 66,
+              "ms": 38613.112083000015
+            },
+            "initial capture": {
+              "calls": 18,
+              "ms": 24594.13162599999
+            },
+            "private git read-tree": {
+              "calls": 28,
+              "ms": 161.76304200001323
+            },
+            "private git update-index": {
+              "calls": 28,
+              "ms": 189.6314569999813
+            },
+            "private git write-tree": {
+              "calls": 28,
+              "ms": 674.8409989999818
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 15.224999999998545
+            },
+            "headAnchor": {
+              "calls": 9,
+              "ms": 12492.483207999994
+            },
+            "private git rev-parse": {
+              "calls": 9,
+              "ms": 54.75058400000853
+            },
+            "private git update-ref": {
+              "calls": 9,
+              "ms": 57.18445899999642
+            },
+            "event": {
+              "calls": 9,
+              "ms": 25395.23445799999
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 13636.889082999995
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.5914579999953276
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 5.782166999997571
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 22.568999999995867
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 20525.557458000003
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 3073.6918330000008
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2753.9324579999993
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2809.417916999999
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2793.6327919999967
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2794.7310829999988
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2785.9042499999996
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2762.1561250000013
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2811.0557499999995
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2831.799208000004
+            },
+            {
+              "stage": "observation",
+              "ms": 20528.128416
+            }
+          ],
+          "diskPaths": 103554,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 20130.259082999997,
+          "cpu": {
+            "user": 5939704,
+            "system": 5559802
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 30,
+              "ms": 17410.296041000016
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 13553.342209999995
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 24.327875000002678
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 20127.521417000004
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 20130.076208000006
+            }
+          ],
+          "diskPaths": 47070,
+          "actors": 10,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 20201.836958,
+          "cpu": {
+            "user": 6593145,
+            "system": 6095163
+          },
+          "stages": {
+            "disk scan": {
+              "calls": 30,
+              "ms": 17495.767378000033
+            },
+            "observation capture": {
+              "calls": 10,
+              "ms": 13646.739996999982
+            },
+            "private git rev-list": {
+              "calls": 1,
+              "ms": 24.81445900000108
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 20198.99887499999
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 20201.66075000001
+            }
+          ],
+          "diskPaths": 47070,
+          "actors": 10,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "validation": {
+      "default": {
+        "filesPassed": 21,
+        "filesSkipped": 8,
+        "testsPassed": 132,
+        "testsSkipped": 139,
+        "seconds": 112.93
+      },
+      "typecheck": "passed on final production source",
+      "nativeMmap": {
+        "testsPassed": 2,
+        "seconds": 12.16
+      },
+      "namedPreview": {
+        "peer": "rohanz+claude",
+        "filesPassed": 5,
+        "testsPassed": 16,
+        "seconds": 24.85,
+        "coverage": "complete",
+        "conflicts": false
+      },
+      "scale": {
+        "filesPassed": 17,
+        "filesSkipped": 1,
+        "testsPassed": 230,
+        "testsSkipped": 2,
+        "seconds": 1107.17
+      },
+      "initialScaleAttempt": {
+        "filesPassed": 16,
+        "filesFailed": 1,
+        "filesSkipped": 1,
+        "testsPassed": 224,
+        "testsFailed": 6,
+        "testsSkipped": 2,
+        "seconds": 1121.04,
+        "failures": "Base-read fault hooks targeted entries(), which the immutable cache can bypass. Retargeted to baseEntries(); no production change."
+      },
+      "repairedBaseFaultFocused": {
+        "testsPassed": 6,
+        "testsSkipped": 34,
+        "seconds": 49.5
+      },
+      "baseFaultNamedPreview": {
+        "peer": "rohanz+claude",
+        "testsPassed": 6,
+        "testsSkipped": 34,
+        "coverage": "complete",
+        "conflicts": false
+      },
+      "finalNativePreview": {
+        "peer": "rohanz+claude",
+        "testsPassed": 2,
+        "seconds": 12.01,
+        "coverage": "complete",
+        "conflicts": false
+      }
+    },
+    "status": "Rejected after review: once-per-participant final checks lose intermediate movement seen by full per-pair validation."
+  },
+  "finalNarrow": {
+    "changes": "Only lifecycle pacing/stage diagnostics and executable-bit freshness; baseline f734bffa validation, fingerprint and caches restored.",
+    "modeRegressionBeforeFix": {
+      "testsFailed": 2,
+      "testsPassed": 1,
+      "seconds": 8.98,
+      "snapshotAndPass": "f734bffa snapshot/graph and full per-pair pass"
+    },
+    "focusedAfterFix": {
+      "filesPassed": 3,
+      "testsPassed": 10,
+      "seconds": 10.16
+    },
+    "threeParticipants": {
+      "participants": 3,
+      "byteOnly": true,
+      "sourceFiles": 1567,
+      "fixtureFiles": 1569,
+      "load": 0,
+      "unbounded": false,
+      "samples": [
+        {
+          "round": 0,
+          "ms": 14496.991250000001,
+          "cpu": {
+            "user": 6209433,
+            "system": 2992987
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 10,
+              "ms": 586.9165839999978
+            },
+            "disk scan": {
+              "calls": 20,
+              "ms": 11510.976502000001
+            },
+            "initial capture": {
+              "calls": 4,
+              "ms": 5855.836082999998
+            },
+            "private git read-tree": {
+              "calls": 7,
+              "ms": 42.40912599999865
+            },
+            "private git update-index": {
+              "calls": 7,
+              "ms": 50.370333999999275
+            },
+            "private git write-tree": {
+              "calls": 7,
+              "ms": 175.90704099999857
+            },
+            "private git commit-tree": {
+              "calls": 2,
+              "ms": 14.282042000000729
+            },
+            "headAnchor": {
+              "calls": 2,
+              "ms": 2965.774457999999
+            },
+            "private git rev-parse": {
+              "calls": 2,
+              "ms": 12.365999999999985
+            },
+            "private git update-ref": {
+              "calls": 2,
+              "ms": 12.495249999999942
+            },
+            "event": {
+              "calls": 2,
+              "ms": 6055.544583
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 4196.8044580000005
+            },
+            "private git merge-tree": {
+              "calls": 1,
+              "ms": 6.225333999998838
+            },
+            "private git merge-base": {
+              "calls": 1,
+              "ms": 5.907584000000497
+            },
+            "private git rev-list": {
+              "calls": 2,
+              "ms": 45.8640009999981
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 8434.618665999998
+            }
+          },
+          "jobs": [
+            {
+              "stage": "lifecycle spawn",
+              "ms": 3164.7142920000006
+            },
+            {
+              "stage": "lifecycle spawn",
+              "ms": 2895.5320409999986
+            },
+            {
+              "stage": "observation",
+              "ms": 8436.628332999999
+            }
+          ],
+          "diskPaths": 31380,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 1,
+          "ms": 8552.035790999998,
+          "cpu": {
+            "user": 2505866,
+            "system": 2061233
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 6,
+              "ms": 319.6508329999997
+            },
+            "disk scan": {
+              "calls": 12,
+              "ms": 6884.465374999996
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 4173.541207999999
+            },
+            "private git read-tree": {
+              "calls": 3,
+              "ms": 20.34741600000052
+            },
+            "private git update-index": {
+              "calls": 3,
+              "ms": 21.342666999997164
+            },
+            "private git write-tree": {
+              "calls": 3,
+              "ms": 72.90745900000547
+            },
+            "private git rev-list": {
+              "calls": 3,
+              "ms": 67.87766700000066
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 8549.889125000002
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 8551.958334000003
+            }
+          ],
+          "diskPaths": 18828,
+          "actors": 3,
+          "halted": false
+        },
+        {
+          "round": 2,
+          "ms": 8534.163000000004,
+          "cpu": {
+            "user": 2632572,
+            "system": 2201073
+          },
+          "stages": {
+            "private git ls-tree": {
+              "calls": 6,
+              "ms": 314.8371249999873
+            },
+            "disk scan": {
+              "calls": 12,
+              "ms": 6903.917043000005
+            },
+            "observation capture": {
+              "calls": 3,
+              "ms": 4239.425500000001
+            },
+            "private git read-tree": {
+              "calls": 3,
+              "ms": 21.250167000001966
+            },
+            "private git update-index": {
+              "calls": 3,
+              "ms": 20.966042000007292
+            },
+            "private git write-tree": {
+              "calls": 3,
+              "ms": 70.6560419999987
+            },
+            "private git rev-list": {
+              "calls": 3,
+              "ms": 70.91975100000127
+            },
+            "pass": {
+              "calls": 1,
+              "ms": 8531.981250000004
+            }
+          },
+          "jobs": [
+            {
+              "stage": "observation",
+              "ms": 8534.078624999998
+            }
+          ],
+          "diskPaths": 18828,
+          "actors": 3,
+          "halted": false
+        }
+      ],
+      "logs": [
+        "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+      ]
+    },
+    "conditions": {
+      "platform": "macOS26.5/Darwin arm64/APFS",
+      "node": "v22.23.4",
+      "git": "2.45.2",
+      "nice": 10,
+      "fixtureFiles": 1569,
+      "hosts": "synthetic; no model processes",
+      "concurrency": "isolated, one Vitest worker, no worker-launched concurrent checks or synthetic load",
+      "deadlines": "production; normal five-second gaps omitted by idle()"
+    },
+    "lifecycleBudgetReview": {
+      "beforeFix": {
+        "testsFailed": 2,
+        "testsSkipped": 4,
+        "seconds": 1.33
+      },
+      "cases": [
+        "lead actor present",
+        "no lead actor"
+      ],
+      "cause": "Lifecycle catch sent over-budget errors through lost() and then applied the event; now it rethrows to the family shutdown handler before either action.",
+      "focusedAfterFix": {
+        "filesPassed": 2,
+        "testsPassed": 9,
+        "seconds": 1.46
+      },
+      "threeParticipantsAfterFix": {
+        "participants": 3,
+        "byteOnly": true,
+        "sourceFiles": 1567,
+        "fixtureFiles": 1569,
+        "load": 0,
+        "unbounded": false,
+        "samples": [
+          {
+            "round": 0,
+            "ms": 14458.924167000001,
+            "cpu": {
+              "user": 6298300,
+              "system": 2957244
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 10,
+                "ms": 555.4315000000006
+              },
+              "disk scan": {
+                "calls": 20,
+                "ms": 11513.366748000004
+              },
+              "initial capture": {
+                "calls": 4,
+                "ms": 5869.494041
+              },
+              "private git read-tree": {
+                "calls": 7,
+                "ms": 42.501917999996294
+              },
+              "private git update-index": {
+                "calls": 7,
+                "ms": 49.06787499999973
+              },
+              "private git write-tree": {
+                "calls": 7,
+                "ms": 177.64158300000236
+              },
+              "private git commit-tree": {
+                "calls": 2,
+                "ms": 14.107583999999406
+              },
+              "headAnchor": {
+                "calls": 2,
+                "ms": 2976.8342079999993
+              },
+              "private git rev-parse": {
+                "calls": 2,
+                "ms": 12.901582999998936
+              },
+              "private git update-ref": {
+                "calls": 2,
+                "ms": 12.84058399999958
+              },
+              "event": {
+                "calls": 2,
+                "ms": 6069.622667
+              },
+              "observation capture": {
+                "calls": 3,
+                "ms": 4160.667875000001
+              },
+              "private git merge-tree": {
+                "calls": 1,
+                "ms": 6.742624999998952
+              },
+              "private git merge-base": {
+                "calls": 1,
+                "ms": 6.31695800000125
+              },
+              "private git rev-list": {
+                "calls": 2,
+                "ms": 45.886084000001574
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 8382.940625
+              }
+            },
+            "jobs": [
+              {
+                "stage": "lifecycle spawn",
+                "ms": 3193.11125
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2881.024374999999
+              },
+              {
+                "stage": "observation",
+                "ms": 8384.662750000001
+              }
+            ],
+            "diskPaths": 31380,
+            "actors": 3,
+            "halted": false
+          },
+          {
+            "round": 1,
+            "ms": 8373.639333,
+            "cpu": {
+              "user": 1506661,
+              "system": 1572960
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 6,
+                "ms": 310.7595430000001
+              },
+              "disk scan": {
+                "calls": 12,
+                "ms": 6752.820416000006
+              },
+              "observation capture": {
+                "calls": 3,
+                "ms": 4136.145876000002
+              },
+              "private git read-tree": {
+                "calls": 3,
+                "ms": 19.768832000005204
+              },
+              "private git update-index": {
+                "calls": 3,
+                "ms": 20.20237499999712
+              },
+              "private git write-tree": {
+                "calls": 3,
+                "ms": 87.51033400000233
+              },
+              "private git rev-list": {
+                "calls": 3,
+                "ms": 67.28883399999904
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 8371.285458999999
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 8373.602292
+              }
+            ],
+            "diskPaths": 18828,
+            "actors": 3,
+            "halted": false
+          },
+          {
+            "round": 2,
+            "ms": 8447.011333000002,
+            "cpu": {
+              "user": 2067063,
+              "system": 1889742
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 6,
+                "ms": 313.66416599999866
+              },
+              "disk scan": {
+                "calls": 12,
+                "ms": 6828.958749000001
+              },
+              "observation capture": {
+                "calls": 3,
+                "ms": 4225.583333000002
+              },
+              "private git read-tree": {
+                "calls": 3,
+                "ms": 19.934291999998095
+              },
+              "private git update-index": {
+                "calls": 3,
+                "ms": 19.828708000000915
+              },
+              "private git write-tree": {
+                "calls": 3,
+                "ms": 69.43500100000165
+              },
+              "private git rev-list": {
+                "calls": 3,
+                "ms": 67.38687500000742
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 8444.911375000003
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 8446.945875000001
+              }
+            ],
+            "diskPaths": 18828,
+            "actors": 3,
+            "halted": false
+          }
+        ],
+        "logs": [
+          "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+        ]
+      }
+    },
+    "validationBeforeLifecycleFix": {
+      "default": {
+        "filesPassed": 20,
+        "filesSkipped": 7,
+        "testsPassed": 128,
+        "testsSkipped": 137,
+        "seconds": 111.04
+      },
+      "typecheck": "passed",
+      "namedPreview": {
+        "peer": "rohanz+claude",
+        "testsPassed": 10,
+        "seconds": 9.42,
+        "coverage": "complete",
+        "conflicts": false
+      },
+      "scale": {
+        "filesPassed": 16,
+        "testsPassed": 226,
+        "seconds": 1114.77
+      }
+    },
+    "validationBeforeClockFix": {
+      "default": {
+        "filesPassed": 20,
+        "filesSkipped": 7,
+        "testsPassed": 130,
+        "testsSkipped": 137,
+        "seconds": 110.57
+      },
+      "typecheck": "passed",
+      "namedPreview": {
+        "peer": "rohanz+claude",
+        "testsPassed": 12,
+        "seconds": 9.51,
+        "coverage": "complete",
+        "conflicts": false
+      },
+      "scale": {
+        "filesPassed": 17,
+        "testsPassed": 232,
+        "seconds": 1106.4
+      }
+    },
+    "validation": {
+      "default": {
+        "filesPassed": 20,
+        "filesSkipped": 7,
+        "testsPassed": 140,
+        "testsSkipped": 137,
+        "seconds": 182.28
+      },
+      "scale": {
+        "filesPassed": 17,
+        "testsPassed": 242,
+        "seconds": 1129.41
+      },
+      "typecheck": "passed",
+      "namedPreview": {
+        "peer": "rohanz+claude",
+        "filesPassed": 3,
+        "testsPassed": 22,
+        "seconds": 9.57,
+        "coverage": "complete",
+        "conflicts": false,
+        "snapshotSha256": "e155d4ebd4714ff73e9e1d74d32858b73c2dd697fe695d661e8cf20564474add"
+      }
+    },
+    "lifecycleClockReview": {
+      "beforeFix": {
+        "filesFailed": 1,
+        "testsFailed": 10,
+        "testsPassed": 6,
+        "seconds": 1.38
+      },
+      "cases": [
+        "remove pin deadline rejection swallowed by cleanup",
+        "Git-step rejection at deadline",
+        "successful event settling at deadline",
+        "collection waiting at deadline",
+        "no-op factory finishing at deadline"
+      ],
+      "leadActorVariants": [
+        "present",
+        "absent"
+      ],
+      "focusedAfterFix": {
+        "filesPassed": 2,
+        "testsPassed": 19,
+        "seconds": 1.54
+      },
+      "guard": "Check the captured job deadline before and after awaited lifecycle factories, events and loss handling, and before waits/checkpointing; no error-prefix classification.",
+      "earlyReturnsAudited": [
+        "participant no longer modelled / lost false",
+        "unfilled reservation waiting and expired / lost false",
+        "ambiguous generation / lost false",
+        "collection waiting and completion expiry",
+        "closed-session catch",
+        "completed-event checkpoint"
+      ],
+      "threeParticipantsAfterFix": {
+        "participants": 3,
+        "byteOnly": true,
+        "sourceFiles": 1567,
+        "fixtureFiles": 1569,
+        "load": 0,
+        "unbounded": false,
+        "samples": [
+          {
+            "round": 0,
+            "ms": 14715.031416999998,
+            "cpu": {
+              "user": 9177875,
+              "system": 3981766
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 10,
+                "ms": 527.7118760000021
+              },
+              "disk scan": {
+                "calls": 20,
+                "ms": 11759.519748
+              },
+              "initial capture": {
+                "calls": 4,
+                "ms": 5923.884081999999
+              },
+              "private git read-tree": {
+                "calls": 7,
+                "ms": 43.73741799999971
+              },
+              "private git update-index": {
+                "calls": 7,
+                "ms": 49.59958200000074
+              },
+              "private git write-tree": {
+                "calls": 7,
+                "ms": 175.72691799999848
+              },
+              "private git commit-tree": {
+                "calls": 2,
+                "ms": 14.697000000000116
+              },
+              "headAnchor": {
+                "calls": 2,
+                "ms": 3019.622875
+              },
+              "private git rev-parse": {
+                "calls": 2,
+                "ms": 12.5198330000012
+              },
+              "private git update-ref": {
+                "calls": 2,
+                "ms": 12.68041699999958
+              },
+              "event": {
+                "calls": 2,
+                "ms": 6122.175959000001
+              },
+              "observation capture": {
+                "calls": 3,
+                "ms": 4252.728915999998
+              },
+              "private git merge-tree": {
+                "calls": 1,
+                "ms": 6.189542000000074
+              },
+              "private git merge-base": {
+                "calls": 1,
+                "ms": 5.925708000000668
+              },
+              "private git rev-list": {
+                "calls": 2,
+                "ms": 46.03925099999833
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 8586.3695
+              }
+            },
+            "jobs": [
+              {
+                "stage": "lifecycle spawn",
+                "ms": 3130.54525
+              },
+              {
+                "stage": "lifecycle spawn",
+                "ms": 2995.827625
+              },
+              {
+                "stage": "observation",
+                "ms": 8588.504791999998
+              }
+            ],
+            "diskPaths": 31380,
+            "actors": 3,
+            "halted": false
+          },
+          {
+            "round": 1,
+            "ms": 8504.820084000003,
+            "cpu": {
+              "user": 2958824,
+              "system": 2238296
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 6,
+                "ms": 313.07695799999783
+              },
+              "disk scan": {
+                "calls": 12,
+                "ms": 6856.058000999998
+              },
+              "observation capture": {
+                "calls": 3,
+                "ms": 4198.855292
+              },
+              "private git read-tree": {
+                "calls": 3,
+                "ms": 19.649625999998534
+              },
+              "private git update-index": {
+                "calls": 3,
+                "ms": 21.614000000001397
+              },
+              "private git write-tree": {
+                "calls": 3,
+                "ms": 73.03591800000868
+              },
+              "private git rev-list": {
+                "calls": 3,
+                "ms": 67.6361259999976
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 8502.419041000001
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 8504.750208000001
+              }
+            ],
+            "diskPaths": 18828,
+            "actors": 3,
+            "halted": false
+          },
+          {
+            "round": 2,
+            "ms": 8600.31175,
+            "cpu": {
+              "user": 3013108,
+              "system": 2369807
+            },
+            "stages": {
+              "private git ls-tree": {
+                "calls": 6,
+                "ms": 314.9192499999954
+              },
+              "disk scan": {
+                "calls": 12,
+                "ms": 6917.67283399999
+              },
+              "observation capture": {
+                "calls": 3,
+                "ms": 4288.586916000004
+              },
+              "private git read-tree": {
+                "calls": 3,
+                "ms": 24.110665999993216
+              },
+              "private git update-index": {
+                "calls": 3,
+                "ms": 24.011500000000524
+              },
+              "private git write-tree": {
+                "calls": 3,
+                "ms": 116.49095900000611
+              },
+              "private git rev-list": {
+                "calls": 3,
+                "ms": 67.99737600000662
+              },
+              "pass": {
+                "calls": 1,
+                "ms": 8597.631125
+              }
+            },
+            "jobs": [
+              {
+                "stage": "observation",
+                "ms": 8600.256250000002
+              }
+            ],
+            "diskPaths": 18828,
+            "actors": 3,
+            "halted": false
+          }
+        ],
+        "logs": [
+          "conflict shadow: pairs=0 agreements=0 disagreements=0 skipped=no workers spawned in this session participant=\"rohanz\""
+        ]
+      }
+    }
+  }
+}

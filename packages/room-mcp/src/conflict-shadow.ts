@@ -117,6 +117,7 @@ export class ConflictShadow {
   private closed = false
   private cancellation = new AbortController()
   private halted = false
+  private stage = 'initialization'
   private lastSummary = 0
   private registry?: WorkerReader
   private onSlots = (event: { changes: { keys: Map<string, { oldValue: ConflictSlot }> }; target: { get(key: string): ConflictSlot | undefined } }) => {
@@ -293,7 +294,7 @@ export class ConflictShadow {
         }
       })])
     } catch (error) {
-      if (error === expired && !cleanup && !this.closed) { this.halt('over budget: private pass deadline exceeded'); this.stop() }
+      if (error === expired && !cleanup && !this.closed) { this.halt(`over budget: private pass deadline exceeded during ${this.stage}`); this.stop() }
       throw error
     } finally {
       clearTimeout(timer)
@@ -309,22 +310,30 @@ export class ConflictShadow {
     return this.cleanup
   }
   private start(): void {
-    if (this.running || this.closed) return
+    if (this.running || this.closed || this.halted) return
     this.graph.deadline = performance.now() + PASS_MS
     this.running = withGitReadDeadline(this.graph.deadline, () => this.budget(async () => {
-      let stage = 'initialization'
+      this.stage = 'initialization'
       try {
         if (!this.initialized) { if (this.halted) return; await this.init() }
-        stage = 'worker inventory'
+        this.stage = 'worker inventory'
         const registry = this.registry!, records = requireWorkerInventory(await registry.list())
         for (const r of records) if (r.lead.participant === this.s.me.name) this.names.set(identity(r.id), r.name)
         this.retire(records)
         if (!this.halted) {
-          stage = 'storage accounting'
+          this.stage = 'storage accounting'
           if (await this.graph.storageBudget() >= CAP - 32 * 1024 * 1024) { this.halt('200 MB session ceiling; lead history unavailable'); return }
-          while (this.queue.size) {
-            stage = 'lifecycle'
+          if (this.queue.size) {
             const ticket = this.queue.get(this.applied + 1)!
+            this.stage = `lifecycle ${ticket.kind}`
+            const deadline = this.graph.deadline
+            const checkDeadline = () => { if (performance.now() >= deadline) throw new Error('over budget') }
+            // The timer may not run before an awaited operation settles or swallows an
+            // error. Check its clock before loss handling, early returns and checkpoints.
+            const withinDeadline = async <T>(work: () => T | Promise<T>): Promise<T> => {
+              checkDeadline()
+              try { return await work() } finally { checkDeadline() }
+            }
             const ids = this.ownerIds(ticket)
             // Spawn tickets may arrive after this pass read its inventory. event() validates
             // their current registry record; absence from the earlier inventory proves nothing.
@@ -332,13 +341,13 @@ export class ConflictShadow {
             // output is still a lead edit; event() handles the available worker ancestry.
             if (ticket.kind !== 'spawn' && ticket.kind !== 'collection' && ids.some(id => ![...this.actors.values()].some(a => a.id === id))) {
               if (ticket.kind === 'remove') this.cancel(ticket)
-              else if (!await this.lost(ticket, 'participant no longer modelled')) return
+              else if (!await withinDeadline(() => this.lost(ticket, 'participant no longer modelled'))) return
             }
             if (!ticket.make) {
-              if (performance.now() < ticket.expires) return
-              if (!await this.lost(ticket, 'unfilled reservation expired')) return
+              if (performance.now() < ticket.expires) { checkDeadline(); return }
+              if (!await withinDeadline(() => this.lost(ticket, 'unfilled reservation expired'))) return
             } else try {
-              const event = await ticket.make()
+              const event = await withinDeadline(ticket.make)
               if (event.kind === 'spawn') { this.spawned = true; this.names.set(identity(event.record.id), event.record.name) }
               if (!ticket.owners) {
                 if (event.kind === 'spawn') ticket.owners = { id: event.record.id, name: event.record.name }
@@ -346,24 +355,37 @@ export class ConflictShadow {
               }
               if (event.kind === 'unsupported' && event.reason === 'no-op') { /* released or participant removed */ }
               else if (ticket.ambiguous) {
-                if (!await this.lost(ticket, 'missing generation or overlapping mutation')) return
+                if (!await withinDeadline(() => this.lost(ticket, 'missing generation or overlapping mutation'))) return
               } else {
                 ticket.waiting = false
-                if (await this.event({ ...event, generation: ticket.generation }) === false) {
-                  if (performance.now() >= ticket.expires) await this.lost(ticket, 'collection completion expired')
+                if (await withinDeadline(() => this.event({ ...event, generation: ticket.generation })) === false) {
+                  if (performance.now() >= ticket.expires) await withinDeadline(() => this.lost(ticket, 'collection completion expired'))
                   else ticket.waiting = true
+                  checkDeadline()
                   return
                 }
               }
             } catch (error) {
               if (this.closed) return
-              if (!await this.lost(ticket, this.reason(error, 'event failed'))) return
+              const reason = this.reason(error, 'event failed')
+              if (!await withinDeadline(() => this.lost(ticket, reason))) return
             }
+            checkDeadline()
             this.applied = ticket.order; this.queue.delete(ticket.order); this.remember(this.applied)
+            // A completed lifecycle event is a safe checkpoint. Each may capture two
+            // whole checkouts; do not charge back-to-back spawns and observation to
+            // the same deadline. The normal interval paces the next bounded job.
+            // No incomplete event is retried, and pass() never sees a partial queue.
+            return
           }
-          stage = 'observation'; await this.pass()
+          this.stage = 'observation'; await this.pass()
         }
-      } catch (error) { if (!this.closed) this.halt(`${this.reason(error, `${stage} failed`)}; lead history unavailable`) }
+      } catch (error) {
+        if (!this.closed) {
+          const reason = this.reason(error, `${this.stage} failed`)
+          this.halt(`${reason}${reason.startsWith('over budget') ? ` during ${this.stage}` : ''}; lead history unavailable`)
+        }
+      }
     }), this.cancellation.signal).catch(error => { if (!this.closed) this.halt(`${this.reason(error, 'private pass failed')}; lead history unavailable`) }).finally(() => {
       this.running = undefined
       if (this.closed) void this.clean()
@@ -371,10 +393,13 @@ export class ConflictShadow {
     })
   }
   async idle(): Promise<void> {
+    let applied: number
     do {
+      applied = this.applied
       if (this.timer) { clearTimeout(this.timer); this.timer = undefined }
       this.start(); await this.running; await this.removal
-    } while (!this.closed && !this.halted && this.queue.get(this.applied + 1)?.make && !this.queue.get(this.applied + 1)?.waiting)
+    } while (!this.closed && !this.halted && (this.queue.get(this.applied + 1)?.make && !this.queue.get(this.applied + 1)?.waiting
+      || !this.queue.size && this.applied !== applied))
   }
   stop(): void {
     if (this.closed) return

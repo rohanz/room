@@ -118,10 +118,14 @@ export async function captureShadow(graph: ShadowGraph, dir: string, base: strin
   const ignored = await ignoredTrackedPaths(dir, paths)
   const gaps = new Set([...gitlinks.keys(), ...publication.excludedPaths, ...paths.filter(p => ignored.has(p) || !safe(p) || inputs.rules.roomIgnore.ignores(p))])
   const entries = new Map<string, ShadowEntry>(gitlinks)
+  const modes = new Map<string, string>()
+  const fileMode = async (p: string) => (await fs.lstat(path.join(dir, p))).mode & 0o111 ? '100755' : '100644'
   for (const fact of facts) {
     if (gaps.has(fact.path)) continue
     const entry = publication.entries.get(fact.path)
     if ((fact.baseSize ?? 0) > SIZE || entry?.state === 'held' || fact.binary || fact.kind === 'unsafe' || (fact.size ?? 0) > SIZE) { gaps.add(fact.path); continue }
+    const mode = fact.kind === 'file' && fact.hash ? await fileMode(fact.path) : undefined
+    if (mode) modes.set(fact.path, mode)
     if (initial) {
       const start = raw.get(fact.path)
       if (start) {
@@ -130,8 +134,7 @@ export async function captureShadow(graph: ShadowGraph, dir: string, base: strin
         else entries.set(fact.path, start)
       }
     } else if (fact.kind === 'file' && fact.hash) {
-      const mode = (await fs.lstat(path.join(dir, fact.path))).mode & 0o111 ? '100755' : '100644'
-      entries.set(fact.path, { mode, oid: fact.text === undefined ? fact.hash : await graph.blob(fact.text) })
+      entries.set(fact.path, { mode: mode!, oid: fact.text === undefined ? fact.hash : await graph.blob(fact.text) })
     }
   }
   // Include covered deletions, but never let a private/binary/oversized path disable a participant.
@@ -147,7 +150,9 @@ export async function captureShadow(graph: ShadowGraph, dir: string, base: strin
     // Opaque pointer movement cannot make an otherwise stable observation unavailable.
     // Only a new gitlink boundary can change which ordinary paths were scanned.
     if (linkSignature(await git(dir, stageArgs)) !== linkSignature(stages)) return false
-    return signature(await scan()) === signature(facts)
+    if (signature(await scan()) !== signature(facts)) return false
+    for (const [p, mode] of modes) if (await fileMode(p) !== mode) return false
+    return true
   }
   if (!await current()) throw new Error('moving snapshot')
   return { entries, gaps, head: expectedHead, fingerprint, current }
