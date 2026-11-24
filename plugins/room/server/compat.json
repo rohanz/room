@@ -1,6 +1,6 @@
 {
   "v": 1,
-  "release": "0.17.54",
+  "release": "0.17.55",
   "compat": {
     "bootstrap": 1,
     "hub": {
@@ -31,5 +31,5 @@
     }
   },
   "workerRecordSchema": 1,
-  "bundleSha256": "16fde85dabfd5f51c447f493d69ad5d1000237349b6732c2a7e195785415e3d1"
+  "bundleSha256": "397d8991133ebb3d05fdbf3c4d7cb4ae608930ca233f03f5be0f405ab4e31831"
 }

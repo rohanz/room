@@ -24,7 +24,7 @@ curl https://room.example.com/health           # {"ok":true,"schema":2,"hub":1,"
 curl https://room.example.com/auth/config      # {"github":"device","providers":["github","oidc"],...}
 ```
 
-The server image and the plugin are released together under one version: `ghcr.io/rohanz/room:<version>` matches plugin `<version>`. Pin a release with `ROOM_IMAGE_TAG=0.17.54` in `.env`, using the version of the plugin your team has installed. To build the image from source instead, clone the repository and add the build override:
+The server image and the plugin are released together under one version: `ghcr.io/rohanz/room:<version>` matches plugin `<version>`. Pin a release with `ROOM_IMAGE_TAG=0.17.55` in `.env`, using the version of the plugin your team has installed. To build the image from source instead, clone the repository and add the build override:
 
 ```sh
 git clone https://github.com/rohanz/room.git && cd room
