@@ -28,6 +28,11 @@ decide and report what it chose, asking only when blocked.
   reports them. Never write "if relevant": assign it or decide it.
 - When you decide something the spec does not state, mark it "decided, not in spec" so
   it gets checked against the spec.
+- Say how much checking you want. Left to itself, each worker tends to run the project's
+  whole gate, and you then run it again on the combined result. The usual split: a worker
+  checks what it changed (it builds, the checks nearest the change pass, and a new or fixed
+  behaviour has a check that fails without it), and you run everything once on the collected
+  tree. Ask for more only where the checking is the point of the task.
 - A reviewer or test worker gets what changed, what it must guarantee, the question you
   want answered, and the spec itself. Leave out the implementers' file lists, earlier
   rounds' findings and the author's account of the fix: they tell an independent reviewer

@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- **The workers skill tells a lead to say how much checking it wants.** Left to themselves, workers tended to run a project's whole gate each, which the lead then ran again on the combined result. A brief now states the split: a worker checks what it changed, and the lead runs everything once on the collected tree.
+
 ## 0.17.55
 
 - **The conflict shadow no longer switches itself off when workers are spawned back to back.** With `ROOM_CONFLICT_SHADOW=1`, recording two new workers and the first comparison had to fit one ten-second limit; on a 1,570-file repository they did not, and the comparator stayed off for the rest of the session. Each spawn, collection or removal is now recorded in its own job with its own limit, and comparisons wait until those are done. A job that still runs out of time switches the comparator off as before, and the log line now names the stage that ran over. The comparator also notices a change to a file's executable bit, which could previously produce a false disagreement line. It still reads every file each round: about 8.5 seconds for a lead and two workers on that repository, so larger teams are expected to exceed the limit and switch it off with a logged reason.
