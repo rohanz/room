@@ -601,12 +601,12 @@ var init_decoding = __esm({
         } else {
           while (remainingLen > 0) {
             const nextLen = remainingLen < 1e4 ? remainingLen : 1e4;
-            const bytes2 = decoder.arr.subarray(decoder.pos, decoder.pos + nextLen);
+            const bytes = decoder.arr.subarray(decoder.pos, decoder.pos + nextLen);
             decoder.pos += nextLen;
             encodedString += String.fromCodePoint.apply(
               null,
               /** @type {any} */
-              bytes2
+              bytes
             );
             remainingLen -= nextLen;
           }
@@ -4995,7 +4995,7 @@ var init_yjs = __esm({
       }
       return negatedAttributes;
     };
-    insertText = (transaction, parent, currPos, text3, attributes) => {
+    insertText = (transaction, parent, currPos, text2, attributes) => {
       currPos.currentAttributes.forEach((_val, key) => {
         if (attributes[key] === void 0) {
           attributes[key] = null;
@@ -5005,10 +5005,10 @@ var init_yjs = __esm({
       const ownClientId = doc.clientID;
       minimizeAttributeChanges(currPos, attributes);
       const negatedAttributes = insertAttributes(transaction, parent, currPos, attributes);
-      const content = text3.constructor === String ? new ContentString(
+      const content = text2.constructor === String ? new ContentString(
         /** @type {string} */
-        text3
-      ) : text3 instanceof AbstractType ? new ContentType(text3) : new ContentEmbed(text3);
+        text2
+      ) : text2 instanceof AbstractType ? new ContentType(text2) : new ContentEmbed(text2);
       let { left, right, index } = currPos;
       if (parent._searchMarker) {
         updateMarkerChanges(parent._searchMarker, currPos.index, content.getLength());
@@ -5534,9 +5534,9 @@ var init_yjs = __esm({
        * @return {YText}
        */
       clone() {
-        const text3 = new _YText();
-        text3.applyDelta(this.toDelta());
-        return text3;
+        const text2 = new _YText();
+        text2.applyDelta(this.toDelta());
+        return text2;
       }
       /**
        * Creates YTextEvent and calls observers.
@@ -5731,8 +5731,8 @@ var init_yjs = __esm({
        *                                    Text.
        * @public
        */
-      insert(index, text3, attributes) {
-        if (text3.length <= 0) {
+      insert(index, text2, attributes) {
+        if (text2.length <= 0) {
           return;
         }
         const y = this.doc;
@@ -5745,10 +5745,10 @@ var init_yjs = __esm({
                 attributes[k] = v;
               });
             }
-            insertText(transaction, this, pos, text3, attributes);
+            insertText(transaction, this, pos, text2, attributes);
           });
         } else {
-          this._pending.push(() => this.insert(index, text3, attributes));
+          this._pending.push(() => this.insert(index, text2, attributes));
         }
       }
       /**
@@ -6594,9 +6594,9 @@ var init_yjs = __esm({
        * @return {YXmlText}
        */
       clone() {
-        const text3 = new _YXmlText();
-        text3.applyDelta(this.toDelta());
-        return text3;
+        const text2 = new _YXmlText();
+        text2.applyDelta(this.toDelta());
+        return text2;
       }
       /**
        * Creates a Dom Element that mirrors this YXmlText.
@@ -8060,20 +8060,6 @@ var init_yjs = __esm({
   }
 });
 
-// packages/shared/src/notice-subjects.ts
-function retiredNoticeMatcher(workers) {
-  const ids = new Set([...workers].map((worker) => worker.id).filter(Boolean));
-  return (m) => conflictNotice(m) && !!m.noticeSubjects?.some((subject) => !!subject.workerId && ids.has(subject.workerId));
-}
-var conflictNotice;
-var init_notice_subjects = __esm({
-  "packages/shared/src/notice-subjects.ts"() {
-    "use strict";
-    init_messages();
-    conflictNotice = (m) => validMessageShape(m) && m.from === "room" && m.id.startsWith("cf:") && ["merge-conflict", "conflict", "contract"].includes(m.type);
-  }
-});
-
 // packages/shared/src/bus-index.ts
 var empty, BusIndex;
 var init_bus_index = __esm({
@@ -8217,6 +8203,7 @@ var init_bus_index = __esm({
       rebuild() {
         this.stale = true;
         try {
+          for (const id2 of this.state.ids.keys()) this.touched.add(id2);
           this.state = this.recompute();
           this.stale = false;
         } catch {
@@ -8307,7 +8294,7 @@ var init_ledger = __esm({
     init_near();
     init_messages();
     MAX_RETIRED_WORKERS = 200;
-    LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "conflict", "base", "plan"]);
+    LEDGER_TYPES = /* @__PURE__ */ new Set(["scope", "claim", "changed", "release", "base", "plan"]);
   }
 });
 
@@ -8336,8 +8323,11 @@ function retireRecipient(doc, recipient, at) {
     for (const m of bus) end(m);
   });
 }
+function isLegacyConflictMessage(message) {
+  return message?.type === "conflict" || message?.type === "merge-conflict" || message?.type === "contract";
+}
 function isOwed(doc, m) {
-  return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id);
+  return !isLegacyConflictMessage(m) && !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id);
 }
 function repliedNoteIds(messages) {
   const out = /* @__PURE__ */ new Set();
@@ -8387,9 +8377,9 @@ function trim(doc, now, opts = {}) {
   const repliedNotes = repliedNoteIds([...bus, ...mail.values()]);
   const eligible = (m) => !replyEnded(doc.outcomes.get(m.id)) && replyEligible(m, repliedNotes, now);
   let cutoff = Math.max(0, bus.length - Math.max(0, opts.busKeep ?? BUS_KEEP));
-  for (let i = bus.length - 1, bytes2 = 0; i >= cutoff; i--) {
-    bytes2 += sizeOf(bus[i]);
-    if (bytes2 > (opts.busBytes ?? BUS_BYTES)) {
+  for (let i = bus.length - 1, bytes = 0; i >= cutoff; i--) {
+    bytes += sizeOf(bus[i]);
+    if (bytes > (opts.busBytes ?? BUS_BYTES)) {
       cutoff = i + 1;
       break;
     }
@@ -8416,12 +8406,12 @@ function trim(doc, now, opts = {}) {
   }
   const evictionOrder = (a, b) => evictionClass(a, pending.has(a.id)) - evictionClass(b, pending.has(b.id)) || byAge(a, b);
   for (const list of byRecipient.values()) {
-    let count = list.length, bytes2 = list.reduce((n, m) => n + sizeOf(m), 0);
+    let count = list.length, bytes = list.reduce((n, m) => n + sizeOf(m), 0);
     for (const m of list.sort(evictionOrder)) {
-      if (count <= OWED_PER_RECIPIENT && bytes2 <= OWED_BYTES_PER_RECIPIENT) break;
+      if (count <= OWED_PER_RECIPIENT && bytes <= OWED_BYTES_PER_RECIPIENT) break;
       end(m, "over-cap");
       count--;
-      bytes2 -= sizeOf(m);
+      bytes -= sizeOf(m);
     }
   }
   let owedBytes = [...pending.values()].reduce((n, m) => n + sizeOf(m), 0);
@@ -8526,7 +8516,6 @@ var init_delivery = __esm({
   "packages/shared/src/delivery.ts"() {
     "use strict";
     init_yjs();
-    init_notice_subjects();
     init_bus_index();
     init_ledger();
     init_messages();
@@ -8568,6 +8557,7 @@ var init_delivery = __esm({
         this.doc = doc;
         this.bus = new BusIndex(doc.bus, (ids, rebuilt) => {
           this.clean = false;
+          for (const id2 of ids) this.messageChanges.add(id2);
           if (rebuilt) this.rebuildPending = true;
           else for (const id2 of ids) this.changed.add(id2);
         });
@@ -8575,9 +8565,15 @@ var init_delivery = __esm({
           for (const key of e.keysChanged) {
             const oldId = this.mailIds.get(key);
             this.checkMail(key);
-            if (oldId !== void 0) this.changed.add(oldId);
+            if (oldId !== void 0) {
+              this.changed.add(oldId);
+              this.messageChanges.add(oldId);
+            }
             const id2 = this.mailIds.get(key);
-            if (id2 !== void 0) this.changed.add(id2);
+            if (id2 !== void 0) {
+              this.changed.add(id2);
+              this.messageChanges.add(id2);
+            }
           }
         });
         doc.outcomes.observe((e) => {
@@ -8619,6 +8615,13 @@ var init_delivery = __esm({
       oldest = Infinity;
       oldestOutcome = Infinity;
       changed = /* @__PURE__ */ new Set();
+      messageChanges = /* @__PURE__ */ new Set();
+      messageListeners = /* @__PURE__ */ new Set();
+      /** Bus/mail body changes, using the existing changed-key index; receipts do not replay bodies. */
+      onMessagesChanged(listener) {
+        this.messageListeners.add(listener);
+        return () => this.messageListeners.delete(listener);
+      }
       rebuildPending = false;
       rootNames = /* @__PURE__ */ new Map();
       afterTransaction = (tx) => {
@@ -8632,12 +8635,17 @@ var init_delivery = __esm({
           if (!(type instanceof YMap) || !this.rootNames.get(type)?.startsWith("seen:")) continue;
           for (const key of keys3) if (key !== null) this.changed.add(key);
         }
-        const changed = this.changed;
+        const changed = this.changed, messages = this.messageChanges;
         this.changed = /* @__PURE__ */ new Set();
+        this.messageChanges = /* @__PURE__ */ new Set();
         if (this.rebuildPending) {
           this.rebuildPending = false;
           this.rebuildAggregates();
         } else this.refreshMany(changed);
+        if (messages.size && this.messageListeners.size) {
+          const copies = new Map([...messages].map((id2) => [id2, [...this.mailCopies.get(id2)?.values() ?? [], ...this.bus.ids.get(id2)?.values() ?? []]]));
+          for (const listener of this.messageListeners) listener(copies);
+        }
       };
       cacheRoots() {
         for (const [name, type] of this.doc.doc.share) this.rootNames.set(type, name);
@@ -8851,25 +8859,29 @@ function revisions(doc) {
   const latest = /* @__PURE__ */ new Map();
   const see = (r) => {
     const old = latest.get(r.name);
-    if (!old || compareRevision(r, old) > 0) latest.set(r.name, r);
+    if (!old || compareRevision(r, old) > 0 || compareRevision(r, old) === 0 && r.level !== void 0) latest.set(r.name, r);
   };
   for (const r of doc.getMap(REVISIONS).values()) see(r);
-  for (const p of doc.getMap("completedPublications").values()) see(publicationRevision(p));
-  const names = /* @__PURE__ */ new Set([...latest.keys(), ...[...doc.getMap("workerViews").values()].map((worker) => worker.name)]);
+  for (const p of doc.getMap("completedPublications").values()) if (hasPublicationRevision(p)) see(publicationRevision(p));
   const participants = doc.getMap("participants");
   const heads = doc.getMap("manifestHead");
+  const names = /* @__PURE__ */ new Set([...latest.keys(), ...heads.keys(), ...[...doc.getMap("workerViews").values()].map((worker) => worker.name)]);
   for (const name of names) {
     const holder = participants.get(`${name}\0holder`);
     if (holder && Number.isSafeInteger(holder.epoch)) see({ name, epoch: holder.epoch, semRev: -1, rev: -1 });
     const head = heads.get(name);
     const epoch = head && Number(head.fence);
-    if (head && epoch !== void 0 && Number.isSafeInteger(epoch)) see({ name, epoch, semRev: head.semRev, rev: head.rev });
+    if (head && epoch !== void 0 && Number.isSafeInteger(epoch)) see({ name, epoch, semRev: head.semRev, rev: head.rev, level: head.level });
   }
   return latest;
 }
 function publicationRevisionCurrent(doc, name, head) {
   const known = revisions(doc).get(name);
   return !known || compareRevision({ name, epoch: Number(head.fence), semRev: head.semRev, rev: head.rev }, known) >= 0;
+}
+function publicationPolicyLevel(doc, name) {
+  const known = revisions(doc).get(name);
+  return known?.level && ["intent", "declared", "full"].includes(known.level) ? { epoch: known.epoch, level: known.level } : void 0;
 }
 function contradicted(doc, p) {
   const view = doc.getMap("workerViews").get(p.worker.id);
@@ -8914,7 +8926,7 @@ function completedPublicationOf(room, name) {
     const p = livePublication(room.doc, view);
     return p && matchesRevision(p, latest) && !contradicted(room.doc, p) ? p : void 0;
   }
-  return [...room.doc.getMap("completedPublications").values()].find((p) => p.worker.id === view.id && p.worker.run === view.run && p.worker.name === name && matchesRevision(p, latest) && !contradicted(room.doc, p));
+  return [...room.doc.getMap("completedPublications").values()].find((p) => hasPublicationRevision(p) && p.worker.id === view.id && p.worker.run === view.run && p.worker.name === name && matchesRevision(p, latest) && !contradicted(room.doc, p));
 }
 function workerMemory(doc) {
   const latest = revisions(doc);
@@ -8944,18 +8956,160 @@ function workerMemory(doc) {
     }
   };
 }
-var REVISIONS, revisionKey, compareRevision, publicationRevision, matchesRevision;
+var REVISIONS, revisionKey, compareRevision, publicationRevision, hasPublicationRevision, matchesRevision;
 var init_worker_memory = __esm({
   "packages/shared/src/worker-memory.ts"() {
     "use strict";
     REVISIONS = "completedPublicationRevisions";
     revisionKey = (r) => `${r.name}\0${r.epoch}\0${r.semRev}\0${r.rev}`;
     compareRevision = (a, b) => a.epoch - b.epoch || a.semRev - b.semRev || a.rev - b.rev;
-    publicationRevision = (p) => ({ name: p.worker.name, epoch: p.holder.epoch, semRev: p.head.semRev, rev: p.head.rev });
+    publicationRevision = (p) => ({ name: p.worker.name, epoch: p.holder.epoch, semRev: p.head.semRev, rev: p.head.rev, level: p.head.level });
+    hasPublicationRevision = (p) => typeof p?.worker?.name === "string" && Number.isSafeInteger(p.holder?.epoch) && Number.isSafeInteger(p.head?.semRev) && Number.isSafeInteger(p.head?.rev);
     matchesRevision = (p, latest) => {
       const known = latest.get(p.worker.name);
       return !!known && compareRevision(publicationRevision(p), known) === 0;
     };
+  }
+});
+
+// packages/shared/src/conflicts.ts
+function currentPolicy(room, name, workerId) {
+  const head = room.manifestHead.get(name), record = participantRecord(room, name);
+  const recorded = () => {
+    const policy = publicationPolicyLevel(room.doc, name);
+    if (!policy?.level) return;
+    const holder = record?.holder;
+    const matchingHolder = holder?.epoch === policy.epoch && (!workerId || holder.workerId === workerId);
+    const matchingProjection = workerId && record?.proj?.projectedFrom === workerId && participantRecord(room, record.proj.projectedBy)?.holder?.epoch === policy.epoch;
+    const matchingCache = workerId && [...room.doc.getMap("completedPublications").values()].some((value2) => value2?.worker?.name === name && value2.worker.id === workerId && value2.holder?.epoch === policy.epoch);
+    return matchingHolder || matchingProjection || matchingCache ? { level: policy.level } : void 0;
+  };
+  if (!head) {
+    const retained = retainedPublication(room, name);
+    if (!retained) return recorded();
+    if (workerId && retained.worker.id !== workerId) return;
+    return { level: retained.head.level, head: retained.head };
+  }
+  if (!Array.isArray(head.excluded) || !["intent", "declared", "full"].includes(head.level) || head.textPrefixes !== void 0 && !Array.isArray(head.textPrefixes)) return;
+  const projection = record?.proj;
+  if ((projection?.projectedFrom || head.projectedFrom) && (projection?.projectedFrom !== head.projectedFrom || projection?.projectedBy !== head.projectedBy)) return;
+  if (!headFenceCurrent(room, name, head)) return recorded();
+  if (!publicationRevisionCurrent(room.doc, name, head)) return recorded();
+  return { level: head.level, head };
+}
+function headFenceCurrent(room, name, head) {
+  const expected = holderFence(participantRecord(room, head.projectedFrom ? head.projectedBy ?? "" : name)?.holder);
+  return !!expected && expected === head.fence;
+}
+function conflictEndReason(room, slot, evidence = {}) {
+  if (evidence.evaluated === "clean" || slot.status === "clean" || slot.settled === "clean") return "clean";
+  if (!hasConflictIdentity(slot)) return "unsupported";
+  if (evidence.retirement) {
+    const ids = new Set(evidence.retirement.map((worker) => worker.id));
+    const named = (name) => {
+      const record = participantRecord(room, name), id2 = record?.holder?.workerId ?? record?.proj?.projectedFrom;
+      return !!id2 && evidence.retirement.some((worker) => worker.name === name && worker.id === id2);
+    };
+    for (const endpoint of slot.endpoints) {
+      const id2 = endpoint.workerId;
+      if (id2 ? ids.has(id2) : named(endpoint.name)) return "retired";
+    }
+    return;
+  }
+  const names = [slot.owner, slot.other];
+  if (names.some((name) => evidence.expiredParticipants?.has(name))) return "expired";
+  if (names.some((name) => evidence.withdrawnParticipants?.has(name))) return "withdrawn";
+  const retired = evidence.retiredWorkerIds ?? new Set(room.retiredWorkers().flatMap((worker) => worker.id ? [worker.id] : []));
+  const observed = /* @__PURE__ */ new Map();
+  const observations = (name) => {
+    let values = observed.get(name);
+    if (!values) {
+      values = [(evidence.endpointEvidence ?? ((name2) => conflictEndpointEvidence(room, name2)))(name)];
+      observed.set(name, values);
+    }
+    return values;
+  };
+  for (const endpoint of slot.endpoints) {
+    const status = endpointStatus(endpoint, observations(endpoint.name), retired);
+    if (status === "retired" || status === "replaced") return status;
+  }
+  if (slot.settled === "none") return;
+  for (const endpoint of slot.endpoints) if (endpoint.workerId && observations(endpoint.name).some((value2) => value2.leads?.some((lead) => lead.workerId === endpoint.workerId && lead.holder?.ended === "released"))) return "withdrawn";
+  if (slot.kind === "edit-in-claim" || slot.kind === "claims") {
+    const peer = slot.endpoints.find((endpoint) => endpoint.name === slot.other);
+    const own = evidence.ownWorker;
+    if (own?.name === slot.other && own.lead === slot.owner && own.status === "done" && (!peer.workerId || own.id === peer.workerId)) return "claims-finished";
+  }
+  const policies = evidence.policyCache ?? /* @__PURE__ */ new Map();
+  const policy = (name) => {
+    const workerId = slot.endpoints.find((endpoint) => endpoint.name === name)?.workerId, key = JSON.stringify([name, workerId]);
+    if (!policies.has(key)) policies.set(key, currentPolicy(room, name, workerId));
+    return policies.get(key);
+  };
+  if (slot.kind !== "claims" && (policy(slot.owner)?.level === "intent" || policy(slot.other)?.level === "intent")) return "grant-withdrawn";
+  if (slot.kind === "contract") {
+    const withdrawn = (name, path11) => {
+      const value2 = policy(name);
+      if (!value2) return false;
+      const { head } = value2;
+      return head?.level === "declared" && !(head.textPrefixes ?? []).some((prefix2) => containsPath(prefix2, path11));
+    };
+    if (withdrawn(slot.other, slot.path) || slot.consumers?.some((path11) => withdrawn(slot.owner, path11))) return "grant-withdrawn";
+  }
+  const leadOf = (name) => {
+    const value2 = policy(name), projection = participantRecord(room, name)?.proj;
+    return value2?.head && projection?.projectedFrom && value2.head.projectedFrom === projection.projectedFrom && value2.head.projectedBy === projection.projectedBy ? projection.projectedBy : void 0;
+  };
+  const ownerLead = leadOf(slot.owner), otherLead = leadOf(slot.other);
+  if (ownerLead && (slot.other === ownerLead || otherLead === ownerLead) || otherLead && slot.owner === otherLead) return "private-route";
+}
+function hasConflictIdentity(slot) {
+  return !!slot && typeof slot.openId === "string" && slot.openId.length > 0 && Array.isArray(slot.endpoints) && slot.endpoints.length === 2 && slot.owner !== slot.other && slot.endpoints.every((endpoint) => endpoint && typeof endpoint.name === "string" && (endpoint.workerId === void 0 || typeof endpoint.workerId === "string" && endpoint.workerId.length > 0)) && slot.endpoints.some((endpoint) => endpoint.name === slot.owner) && slot.endpoints.some((endpoint) => endpoint.name === slot.other);
+}
+function conflictEndpointEvidence(room, name) {
+  const record = participantRecord(room, name), head = room.manifestHead.get(name), worker = room.workerViewOf(name);
+  const accepted = room.acceptedWorkerViewOf(name);
+  const projected = record?.proj && head && head.projectedFrom === record.proj.projectedFrom && head.projectedBy === record.proj.projectedBy && headFenceCurrent(room, name, head);
+  const viewHolder = worker && participantRecord(room, worker.lead)?.holder;
+  const viewed = viewHolder && worker.fence === (holderFence(viewHolder) ?? viewHolder.sessionId);
+  const leads = [
+    ...projected ? [{ name: record.proj.projectedBy, workerId: record.proj.projectedFrom }] : [],
+    ...viewed ? [{ name: worker.lead, workerId: worker.id }] : []
+  ].map((lead) => {
+    const holder = participantRecord(room, lead.name)?.holder;
+    return { ...lead, ...holder ? { holder: { epoch: holder.epoch, ended: holder.ended } } : {} };
+  });
+  return {
+    name,
+    ...record?.holder?.workerId ? { holderWorkerId: record.holder.workerId } : {},
+    ...record?.proj ? { projection: { ...record.proj } } : {},
+    ...head ? { manifestProjection: {
+      projectedFrom: head.projectedFrom,
+      projectedBy: head.projectedBy,
+      ...head.projectedFrom && !headFenceCurrent(room, name, head) ? { stale: true } : {}
+    } } : {},
+    ...accepted ? { acceptedWorkerId: accepted.id } : {},
+    ...leads.length ? { leads } : {}
+  };
+}
+function workerIdFromEvidence(evidence) {
+  const proj = evidence.projection, head = evidence.manifestProjection;
+  const projected = proj?.projectedFrom && !head?.stale && proj.projectedFrom === head?.projectedFrom && proj.projectedBy === head.projectedBy ? proj.projectedFrom : void 0;
+  return projected ?? evidence.holderWorkerId ?? (!proj?.projectedFrom && !head?.projectedFrom ? evidence.acceptedWorkerId : void 0);
+}
+function endpointStatus(endpoint, observations, retired) {
+  if (!endpoint.workerId) return "unknown";
+  if (retired.has(endpoint.workerId)) return "retired";
+  const ids = observations.map(workerIdFromEvidence).filter((id2) => !!id2);
+  if (ids.some((id2) => id2 !== endpoint.workerId)) return "replaced";
+  return ids.length ? "current" : "unknown";
+}
+var init_conflicts = __esm({
+  "packages/shared/src/conflicts.ts"() {
+    "use strict";
+    init_doc();
+    init_near();
+    init_worker_memory();
   }
 });
 
@@ -9371,24 +9525,24 @@ function defaultPriority(msg) {
   if (!kind) throw new Error(`unregistered message kind: ${msg.type}`);
   return typeof kind.priority === "function" ? kind.priority(msg) : kind.priority;
 }
-function lineStart(text3, oneBasedLine) {
+function lineStart(text2, oneBasedLine) {
   let index = 0;
   for (let line = 1; line < Math.max(1, oneBasedLine); line++) {
-    const newline = text3.indexOf("\n", index);
-    if (newline < 0) return text3.length;
+    const newline = text2.indexOf("\n", index);
+    if (newline < 0) return text2.length;
     index = newline + 1;
   }
   return index;
 }
-function lineAt(text3, index) {
+function lineAt(text2, index) {
   let line = 1;
-  for (let i = 0; i < Math.min(index, text3.length); i++) if (text3[i] === "\n") line++;
+  for (let i = 0; i < Math.min(index, text2.length); i++) if (text2[i] === "\n") line++;
   return line;
 }
-function makeAnchor(text3, from2, to2) {
+function makeAnchor(text2, from2, to2) {
   return {
-    from: relativePositionToJSON(createRelativePositionFromTypeIndex(text3, lineStart(text3.toString(), from2))),
-    to: relativePositionToJSON(createRelativePositionFromTypeIndex(text3, lineStart(text3.toString(), to2)))
+    from: relativePositionToJSON(createRelativePositionFromTypeIndex(text2, lineStart(text2.toString(), from2))),
+    to: relativePositionToJSON(createRelativePositionFromTypeIndex(text2, lineStart(text2.toString(), to2)))
   };
 }
 var storedPrScope, validColorIndex, RoomDoc;
@@ -9396,7 +9550,7 @@ var init_doc = __esm({
   "packages/shared/src/doc.ts"() {
     "use strict";
     init_delivery();
-    init_notice_subjects();
+    init_conflicts();
     init_worker_memory();
     init_claims();
     init_messages();
@@ -9565,6 +9719,9 @@ var init_doc = __esm({
         this.doc.transact(() => {
           const names = this.retireWorkerMail(retired, at);
           const ids = new Set(retired.map((worker) => worker.id));
+          const conflictEvidence = { retirement: retired.flatMap((worker) => worker.id ? [{ id: worker.id, name: worker.name }] : []) };
+          const conflicts = this.doc.getMap("conflicts");
+          for (const [key, slot] of conflicts) if (conflictEndReason(this, slot, conflictEvidence)) conflicts.delete(key);
           const cached = this.doc.getMap("completedPublications");
           for (const [key, value2] of cached) if (ids.has(value2.worker.id)) cached.delete(key);
           for (const name of names) {
@@ -9576,23 +9733,7 @@ var init_doc = __esm({
             this.colors.delete(name);
             this.seen(name).clear();
           }
-          const conflicts = this.doc.getMap("conflicts");
-          for (const [key, slot] of conflicts) if (names.has(slot.owner) || names.has(slot.other)) conflicts.delete(key);
           for (const worker of retired) if (worker.id) this.workerViews.delete(worker.id);
-          this.endWorkerNotices(retired, at);
-        });
-      }
-      /** End only notices bound to these exact subjects; do not retire their local names or files. */
-      endWorkerNotices(workers, at) {
-        const retired = [...workers];
-        if (!retired.length) return;
-        const notice = retiredNoticeMatcher(retired);
-        this.doc.transact(() => {
-          for (const m of [...this.messages(), ...this.mail.values()]) {
-            if (!notice(m)) continue;
-            if (!this.outcomes.has(m.id)) this.outcomes.set(m.id, { to: m.to ?? "", from: m.from, outcome: "expired", at });
-            this.mail.delete(m.id);
-          }
         });
       }
       /**
@@ -9653,11 +9794,11 @@ var init_doc = __esm({
       clearPersonBaseTexts(person) {
         for (const key of this.ownedBaseTexts.keys()) if (this.isPersonBaseTextKey(key, person)) this.ownedBaseTexts.delete(key);
       }
-      setBaseText(person, sha, relpath, text3, origin) {
+      setBaseText(person, sha, relpath, text2, origin) {
         const key = this.baseTextKey(person, sha, relpath);
-        if (this.ownedBaseTexts.get(key) === text3) return;
+        if (this.ownedBaseTexts.get(key) === text2) return;
         this.doc.transact(() => {
-          this.ownedBaseTexts.set(key, text3);
+          this.ownedBaseTexts.set(key, text2);
         }, origin);
       }
       // ---- overlays ----------------------------------------------------------
@@ -9683,18 +9824,18 @@ var init_doc = __esm({
         const previous = existing?.toString() ?? "";
         if (existing && previous === content) return;
         this.doc.transact(() => {
-          let text3 = this.overlayText(person, relpath);
-          if (!text3) {
-            text3 = new YText();
-            this.overlay(person).set(relpath, text3);
+          let text2 = this.overlayText(person, relpath);
+          if (!text2) {
+            text2 = new YText();
+            this.overlay(person).set(relpath, text2);
           }
           let index = 0;
-          const before = text3 === existing ? previous : text3.toString();
+          const before = text2 === existing ? previous : text2.toString();
           for (const [kind, value2] of prepared?.before === before ? prepared.ops : boundedTextDiff(before, content)) {
             if (kind === 0) index += value2.length;
-            else if (kind === -1) text3.delete(index, value2.length);
+            else if (kind === -1) text2.delete(index, value2.length);
             else {
-              text3.insert(index, value2);
+              text2.insert(index, value2);
               index += value2.length;
             }
           }
@@ -9703,17 +9844,17 @@ var init_doc = __esm({
       /** Publisher-only apply of an overlay diff prepared against its fenced incarnation. */
       applyPreparedOverlayDiff(person, relpath, prepared, origin) {
         this.doc.transact(() => {
-          let text3 = this.overlayText(person, relpath);
-          if (!text3) {
-            text3 = new YText();
-            this.overlay(person).set(relpath, text3);
+          let text2 = this.overlayText(person, relpath);
+          if (!text2) {
+            text2 = new YText();
+            this.overlay(person).set(relpath, text2);
           }
           let index = 0;
           for (const [kind, value2] of prepared.ops) {
             if (kind === 0) index += value2.length;
-            else if (kind === -1) text3.delete(index, value2.length);
+            else if (kind === -1) text2.delete(index, value2.length);
             else {
-              text3.insert(index, value2);
+              text2.insert(index, value2);
               index += value2.length;
             }
           }
@@ -9758,10 +9899,10 @@ var init_doc = __esm({
         return person ? this.overlayText(person, relpath)?.toString() : void 0;
       }
       lineCount(relpath, person) {
-        const text3 = this.text(relpath, person);
-        if (text3 === void 0) return 0;
-        const count = text3.split("\n").length;
-        return text3.endsWith("\n") ? count - 1 : count;
+        const text2 = this.text(relpath, person);
+        if (text2 === void 0) return 0;
+        const count = text2.split("\n").length;
+        return text2.endsWith("\n") ? count - 1 : count;
       }
       // ---- meta --------------------------------------------------------------
       get meta() {
@@ -9804,8 +9945,8 @@ var init_doc = __esm({
         }, origin);
       }
       addClaim(input, origin) {
-        const text3 = this.overlayText(input.by, input.path);
-        const anchor = text3 && !input.mirrorOf ? makeAnchor(text3, input.from, input.to) : void 0;
+        const text2 = this.overlayText(input.by, input.path);
+        const anchor = text2 && !input.mirrorOf ? makeAnchor(text2, input.from, input.to) : void 0;
         const claim = { ...input, id: newId("c_"), at: Date.now(), ...anchor ? { anchor } : {} };
         this.doc.transact(() => {
           this.claims.set(claim.id, claim);
@@ -9814,8 +9955,8 @@ var init_doc = __esm({
       }
       claimRange(claim) {
         if (claim.mirrorOf) return { from: claim.from, to: claim.to };
-        const text3 = this.overlayText(claim.by, claim.path);
-        if (!text3 || !claim.anchor) return { from: claim.from, to: claim.to };
+        const text2 = this.overlayText(claim.by, claim.path);
+        if (!text2 || !claim.anchor) return { from: claim.from, to: claim.to };
         try {
           const from2 = createAbsolutePositionFromRelativePosition(
             createRelativePositionFromJSON(claim.anchor.from),
@@ -9825,9 +9966,9 @@ var init_doc = __esm({
             createRelativePositionFromJSON(claim.anchor.to),
             this.doc
           );
-          if (!from2 || !to2 || from2.type !== text3 || to2.type !== text3) return { from: claim.from, to: claim.to };
-          const fromLine = lineAt(text3.toString(), from2.index);
-          const toLine = lineAt(text3.toString(), to2.index);
+          if (!from2 || !to2 || from2.type !== text2 || to2.type !== text2) return { from: claim.from, to: claim.to };
+          const fromLine = lineAt(text2.toString(), from2.index);
+          const toLine = lineAt(text2.toString(), to2.index);
           return { from: fromLine, to: Math.max(fromLine, toLine) };
         } catch {
           return { from: claim.from, to: claim.to };
@@ -9844,9 +9985,9 @@ var init_doc = __esm({
       moveClaim(id2, from2, to2, origin, claimedHash) {
         const claim = this.claims.get(id2);
         if (!claim) return void 0;
-        const text3 = this.overlayText(claim.by, claim.path);
+        const text2 = this.overlayText(claim.by, claim.path);
         const { anchor: _oldAnchor, claimedHash: _oldHash, ...rest } = claim;
-        const next = { ...rest, from: from2, to: to2, ...claimedHash !== void 0 ? { claimedHash } : {}, ...text3 && !claim.mirrorOf ? { anchor: makeAnchor(text3, from2, to2) } : {} };
+        const next = { ...rest, from: from2, to: to2, ...claimedHash !== void 0 ? { claimedHash } : {}, ...text2 && !claim.mirrorOf ? { anchor: makeAnchor(text2, from2, to2) } : {} };
         this.doc.transact(() => {
           this.claims.set(id2, next);
         }, origin);
@@ -10064,7 +10205,7 @@ function messageForMe(me, m, context = {}) {
 function formatPlans(plans) {
   return plans.map((p) => `${p.kind} ${p.symbol}${p.detail ? ` \u2192 ${p.detail}` : ""}`).join("; ");
 }
-var who, to, priority, conflictLabel, PEER_NOTICE_TEXT, PEER_NOTICE_ID, forWaiter, scopePaths, BASE_CATCH_UP, builtins, MessageKinds;
+var who, to, priority, conflictLabel, forWaiter, scopePaths, BASE_CATCH_UP, builtins, MessageKinds;
 var init_messages = __esm({
   "packages/shared/src/messages.ts"() {
     "use strict";
@@ -10074,9 +10215,7 @@ var init_messages = __esm({
     who = (m) => displayName({ name: m.from, kind: m.fromKind });
     to = (m) => m.to ? ` \u2192 ${displayName({ name: m.to, kind: "agent" })}` : "";
     priority = (m) => `[${m.priority}] `;
-    conflictLabel = (m, certified = false) => m.clearedFrom === "possible" ? "POSSIBLE conflict cleared" : m.clearedFrom === "conflict" ? m.merges === "clean" ? "overlap cleared" : "CONFLICT cleared" : m.merges === "clean" ? "overlap" : certified || m.priority !== "fyi" ? "CONFLICT" : "POSSIBLE conflict";
-    PEER_NOTICE_TEXT = /^\d+ files? (?:conflicts?|no longer conflict) with /;
-    PEER_NOTICE_ID = /^cf:([0-9a-f]+):peer:/;
+    conflictLabel = (m) => m.clearedFrom === "possible" ? "POSSIBLE conflict cleared" : m.clearedFrom === "conflict" ? m.merges === "clean" ? "overlap cleared" : "CONFLICT cleared" : m.merges === "clean" ? "overlap" : m.priority !== "fyi" ? "CONFLICT" : "POSSIBLE conflict";
     forWaiter = (m, w) => !!m.to && !!w.me && m.to === w.me;
     scopePaths = (paths) => [...new Set(paths.map(normalizeCoordinationPath))].sort().join("\0");
     BASE_CATCH_UP = "Run git pull --ff-only --autostash to catch up. If it refuses, or your push is rejected, stop and tell your human; never merge another branch into this one, and do not undo, rebase or recommit your commits to get past it without their yes.";
@@ -10088,7 +10227,8 @@ var init_messages = __esm({
       answer: { priority: "notify", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !!w.questionId && m.inReplyTo === w.questionId && m.id === w.answerId && forWaiter(m, w), format: (m) => `${priority(m)}${who(m)}${to(m)} answers: ${m.text}` },
       // A certified clean overlap needs coordination, but is not a reason to interrupt an edit.
       conflict: { priority: (m) => m.merges === "clean" ? "notify" : "interrupt", audience: "claim-holders", wakes: "always", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
-      "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => PEER_NOTICE_TEXT.test(m.text) ? `${priority(m)}${m.clearedFrom ? "CONFLICT cleared" : "CONFLICT"}: ${m.text}` : `${priority(m)}${conflictLabel(m, PEER_NOTICE_ID.test(m.id))} on ${m.path}: ${m.text}` },
+      // Retained so legacy saved messages validate and expire normally; delivery ignores these kinds.
+      "merge-conflict": { priority: "notify", audience: "addressed", inbox: true, wakes: "addressed", format: (m) => `${priority(m)}${conflictLabel(m)} on ${m.path}: ${m.text}` },
       contract: { priority: "notify", audience: "addressed", inbox: true, wakes: "always", format: (m) => `${priority(m)}CONTRACT on ${m.path}: ${m.text}` },
       note: { priority: (m) => m.to ? "notify" : "fyi", audience: "everyone", inbox: true, wakes: (m, ctx) => m.to === ctx.me.name, endsWait: (m, w) => !w.answersOnly && (m.to === w.me || !m.to && m.priority === "interrupt" && !!w.me && messageForMe({ name: w.me }, m)), format: (m) => `${priority(m)}${who(m)}${to(m)}: ${m.text}` },
       done: { priority: "fyi", audience: "addressed", wakes: "addressed", endsWait: (m, w) => !w.answersOnly && m.to === w.me, format: (m) => `${priority(m)}${who(m)} (worker ${m.tag}) finished: ${m.summary}${m.changed.length ? ` \u2014 changed ${m.changed.join(", ")}` : ""}` },
@@ -12377,7 +12517,7 @@ var require_websocket = __commonJS({
     var http3 = __require("http");
     var net = __require("net");
     var tls = __require("tls");
-    var { randomBytes: randomBytes2, createHash: createHash4 } = __require("crypto");
+    var { randomBytes: randomBytes2, createHash: createHash3 } = __require("crypto");
     var { Duplex, Readable } = __require("stream");
     var { URL: URL2 } = __require("url");
     var PerMessageDeflate2 = require_permessage_deflate();
@@ -13045,8 +13185,8 @@ var require_websocket = __commonJS({
           abortHandshake(websocket, socket, "Invalid Upgrade header");
           return;
         }
-        const digest2 = createHash4("sha1").update(key + GUID).digest("base64");
-        if (res.headers["sec-websocket-accept"] !== digest2) {
+        const digest = createHash3("sha1").update(key + GUID).digest("base64");
+        if (res.headers["sec-websocket-accept"] !== digest) {
           abortHandshake(websocket, socket, "Invalid Sec-WebSocket-Accept header");
           return;
         }
@@ -13414,7 +13554,7 @@ var require_websocket_server = __commonJS({
     var EventEmitter = __require("events");
     var http3 = __require("http");
     var { Duplex } = __require("stream");
-    var { createHash: createHash4 } = __require("crypto");
+    var { createHash: createHash3 } = __require("crypto");
     var extension2 = require_extension();
     var PerMessageDeflate2 = require_permessage_deflate();
     var subprotocol2 = require_subprotocol();
@@ -13721,12 +13861,12 @@ var require_websocket_server = __commonJS({
           );
         }
         if (this._state > RUNNING) return abortHandshake(socket, 503);
-        const digest2 = createHash4("sha1").update(key + GUID).digest("base64");
+        const digest = createHash3("sha1").update(key + GUID).digest("base64");
         const headers = [
           "HTTP/1.1 101 Switching Protocols",
           "Upgrade: websocket",
           "Connection: Upgrade",
-          `Sec-WebSocket-Accept: ${digest2}`
+          `Sec-WebSocket-Accept: ${digest}`
         ];
         const ws = new this.options.WebSocket(null, void 0, this.options);
         if (protocols.size) {
@@ -13843,14 +13983,13 @@ var CAPABILITY_REGISTRY = freeze({
   "room.manifest": { scope: "room", wire: "schema-2 manifest records", documentEffects: "baseline per-participant manifests and sharing revisions", versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
   "room.ledger": { scope: "room", wire: "proto-1 ordered post and baseline event vocabulary", documentEffects: "schema-2 bus, mail, archive, outcomes and receipts; no stronger durability", versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
   "room.daemon": { scope: "connection", wire: "negotiated standalone local transport; no in-session takeover", documentEffects: "client retains its replica across involuntary transport rebinding; delayed snapshot durability unchanged", versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: {} } } },
-  "room.worker-handover": { scope: "participant", wire: "reserved; not implemented", documentEffects: "reserved; grants no worker lifecycle guarantee", versions: {} },
-  "room.notice-lifecycle": { scope: "connection", wire: "optional proto-1 notice-lifecycle requests authorized by private live leases", documentEffects: "stage 1 same-room exact-id registration with private worker dependencies and worker-retirement endings only; no evaluated endings, restart recovery or projection; unknown/untracked state retains TTL", versions: { 1: { hub: { min: 1, max: 1 }, schemas: [2], dependencies: { "room.ledger": [1] } } } }
+  "room.worker-handover": { scope: "participant", wire: "reserved; not implemented", documentEffects: "reserved; grants no worker lifecycle guarantee", versions: {} }
 });
 var CURRENT_COMPAT = freeze({
   bootstrap: 1,
   hub: { min: 1, max: 1 },
   schemas: { read: [2], write: [2] },
-  capabilities: { "room.generation": [1], "room.manifest": [1], "room.ledger": [1], "room.notice-lifecycle": [1] }
+  capabilities: { "room.generation": [1], "room.manifest": [1], "room.ledger": [1] }
 });
 var CompatibilityValidationError = class extends Error {
   constructor(message) {
@@ -14249,6 +14388,7 @@ init_near();
 // packages/shared/src/expiry.ts
 init_doc();
 init_views();
+init_conflicts();
 var ROOM_STALE_DAYS = ROOM_STALE_MS / (24 * 60 * 60 * 1e3);
 var RECORD_EVERY_MS = 60 * 60 * 1e3;
 var same = (a, b) => a === b || !!a && !!b && a.observedMs === b.observedMs && a.epoch === b.epoch;
@@ -14330,10 +14470,12 @@ function expireParticipant(room, name, origin, post) {
     for (const key of [...map.keys()]) if (key.startsWith(prefix2)) map.delete(key);
   };
   room.doc.transact(() => {
+    const evidence = { expiredParticipants: /* @__PURE__ */ new Set([name]) };
+    const conflicts = room.doc.getMap("conflicts");
+    for (const [key, slot] of conflicts) if (conflictEndReason(room, slot, evidence)) conflicts.delete(key);
     dropOwned(room.participants);
     dropOwned(room.doc.getMap("manifest"));
     room.doc.getMap("manifestHead").delete(name);
-    dropOwned(room.doc.getMap("conflicts"));
     room.clearWorkerCoordination(name, `expired after ${ROOM_STALE_DAYS} days offline`, post);
     room.expiry.delete(name);
   }, origin);
@@ -14442,188 +14584,7 @@ var RETIRED_ENVIRONMENT = Object.freeze({
 
 // packages/shared/src/index.ts
 init_worker_memory();
-
-// packages/hub-core/src/notice-lifecycle.ts
-import { createHash } from "node:crypto";
-var NOTICE_CAPABILITY = "room.notice-lifecycle";
-var NOTICE_ROOM_IDS = 2e3;
-var NOTICE_ROOM_BYTES = 512 * 1024;
-var NOTICE_PRODUCER_IDS = 200;
-var NOTICE_PRODUCER_BYTES = 64 * 1024;
-var NOTICE_BATCH_IDS = 64;
-var NOTICE_BATCH_BYTES = 64 * 1024;
-var END_RESERVE = 256;
-var digest = (value2) => createHash("sha256").update(JSON.stringify(value2)).digest("hex");
-var bytes = (value2) => Buffer.byteLength(JSON.stringify(value2));
-var object2 = (v) => !!v && typeof v === "object" && !Array.isArray(v);
-var text2 = (v, max2 = 128) => typeof v === "string" && v.length > 0 && Buffer.byteLength(v) <= max2;
-var integer2 = (v) => Number.isSafeInteger(v) && v >= 0;
-function workerNoticeId(id2, workerIds) {
-  return workerIds.length ? `${id2}:worker:${digest([...new Set(workerIds)].sort())}` : void 0;
-}
-var bindsWorkers = (id2, workerIds) => {
-  const suffix = workerNoticeId("", workerIds);
-  return suffix !== void 0 && id2.endsWith(suffix);
-};
-function noticeEvidence(room, names) {
-  const sorted = [...new Set(names)].sort(), named = new Set(sorted);
-  return { names: sorted, revision: digest([
-    room.roomSalt,
-    sorted.map((name) => [
-      name,
-      room.manifestHead.get(name),
-      room.participants.get(`${name}\0holder`),
-      room.participants.get(`${name}\0git`),
-      room.participants.get(`${name}\0proj`),
-      [...room.manifest.entries()].filter(([key]) => key.startsWith(`${name}\0`)).sort(([a], [b]) => a.localeCompare(b)).map(([key, map]) => [key, [...map.entries()].sort(([a], [b]) => a.localeCompare(b))])
-    ]),
-    [...room.claims.entries()].filter(([, claim]) => named.has(claim.by)).sort(([a], [b]) => a.localeCompare(b)),
-    [...room.workerViews.entries()].filter(([, worker]) => named.has(worker.name)).sort(([a], [b]) => a.localeCompare(b)),
-    sorted.map((name) => {
-      const graph = room.graphs.get(name);
-      return [name, graph && [
-        graph.base,
-        graph.status,
-        graph.sourceFence,
-        graph.sourceRev,
-        graph.truncated,
-        graph.observedTruncated,
-        graph.observed,
-        graph.uncoveredPaths,
-        graph.uncoveredTruncated
-      ]];
-    })
-  ]) };
-}
-var NoticeInventory = class {
-  constructor(room, generation) {
-    this.room = room;
-    this.generation = generation;
-  }
-  room;
-  generation;
-  records = /* @__PURE__ */ new Map();
-  /** Reassert only this authority's records. Synced or restart-loaded inventories are unknown, never adopted. */
-  reassert() {
-    const map = this.room.doc.getMap("noticeInventory");
-    for (const key of map.keys()) if (!this.records.has(key)) map.delete(key);
-    for (const [key, record] of this.records) if (JSON.stringify(map.get(key)) !== JSON.stringify(record)) map.set(key, structuredClone(record));
-  }
-  terminal(id2) {
-    return [...this.records.values()].some((r) => r.entries.some((e) => e.id === id2 && e.ended !== void 0));
-  }
-  registered(id2) {
-    return [...this.records.values()].some((r) => r.entries.some((e) => e.id === id2));
-  }
-  apply(input, authority, now, publish, dependency, fail) {
-    if (!object2(input) || bytes(input) > NOTICE_BATCH_BYTES) return fail("too-large", "notice intent exceeds 64 KiB");
-    const common = ["action", "producer", "expected", "operation"];
-    const fields = input.action === "register" ? [...common, "evidence", "episode", "msg"] : [...common, "workerId", "targets"];
-    if (Object.keys(input).some((k) => !fields.includes(k)) || input.action !== "register" && input.action !== "retire" || !text2(input.producer) || !integer2(input.expected) || !text2(input.operation, 64)) return fail("invalid", "invalid notice registration or retirement");
-    const intent = input;
-    if (intent.action === "retire" !== (intent.producer === "retirement") || intent.action === "retire" && intent.expected !== 0)
-      return fail("invalid", "retirement uses its reserved operation namespace");
-    const hash = digest(intent), opKey = digest([authority.principal, authority.name, intent.operation]);
-    if (intent.action === "retire") return this.retire(intent, authority, now, hash, opKey, fail);
-    if (!object2(intent.evidence) || Object.keys(intent.evidence).some((k) => !["names", "revision"].includes(k)) || !Array.isArray(intent.evidence.names) || intent.evidence.names.length < 1 || intent.evidence.names.length > 4 || !intent.evidence.names.every((n) => text2(n, 200)) || !text2(intent.evidence.revision, 64) || !intent.evidence.names.includes(authority.name)) return fail("invalid", "registration requires its published participant evidence");
-    const owned = this.records.get(intent.producer), previous = owned?.operations[opKey];
-    if (owned && (owned.name !== authority.name || owned.principal !== authority.principal || owned.workerId !== authority.workerId))
-      return fail("not-yours", "notice producer belongs to another incarnation");
-    if (owned && (owned.session !== authority.session || owned.epoch !== authority.epoch)) return fail("stale", "notice producer authority changed");
-    if (previous) {
-      if (previous.hash !== hash) return fail("invalid", "conflicting notice operation retry");
-      return {
-        v: 1,
-        re: "",
-        ok: true,
-        managed: true,
-        duplicate: true,
-        producer: intent.producer,
-        revision: previous.revision,
-        inventory: structuredClone(owned)
-      };
-    }
-    if (intent.expected !== (owned?.revision ?? 0)) return fail("stale", "notice inventory revision moved");
-    if (noticeEvidence(this.room, intent.evidence.names).revision !== intent.evidence.revision) return fail("stale", "notice registration inputs moved");
-    const msg = intent.msg;
-    if (!object2(msg) || msg.from !== "room" || !text2(msg.id, 512) || !msg.id.startsWith("cf:") || !text2(msg.to, 200) || !intent.evidence.names.includes(msg.to) || !["fyi", "notify", "interrupt"].includes(String(msg.priority)) || !["conflict", "merge-conflict", "contract"].includes(String(msg.type)) || !text2(intent.episode))
-      return fail("invalid", "registration requires an exact addressed conflict notice");
-    const dependencies = intent.evidence.names.map(dependency).filter((d) => !!d);
-    if (!bindsWorkers(msg.id, dependencies.map((d) => d.workerId)))
-      return { v: 1, re: "", ok: true, managed: false, fallback: "unbound" };
-    if (this.registered(msg.id)) return { v: 1, re: "", ok: true, managed: true, duplicate: true, gone: this.terminal(msg.id) };
-    if (this.room.message(msg.id) || this.room.archive.has(msg.id) || this.room.outcomes.has(msg.id))
-      return { v: 1, re: "", ok: true, managed: false, fallback: "untracked" };
-    const added = {
-      id: msg.id,
-      from: "room",
-      to: msg.to,
-      episode: intent.episode,
-      priority: String(msg.priority),
-      names: [...intent.evidence.names],
-      until: now + OWED_TTL_MS,
-      dependencies
-    };
-    const revision = (owned?.revision ?? 0) + 1;
-    const next = {
-      ...owned ?? { v: 1, generation: this.generation(), ...authority, until: added.until, entries: [], operations: {} },
-      revision,
-      until: Math.max(owned?.until ?? 0, added.until),
-      entries: [...owned?.entries ?? [], added],
-      operations: { ...owned?.operations, [opKey]: { hash, revision } }
-    };
-    if (!this.fits(next, intent.producer)) return { v: 1, re: "", ok: true, managed: false, fallback: "capacity" };
-    const result = publish(msg);
-    if (!result.ok || result.gone) return result;
-    this.records.set(intent.producer, next);
-    this.reassert();
-    return { v: 1, re: "", ok: true, managed: true, producer: intent.producer, revision, inventory: structuredClone(next) };
-  }
-  retire(intent, authority, now, hash, opKey, fail) {
-    if (!text2(intent.workerId, 512) || !Array.isArray(intent.targets) || !intent.targets.length || intent.targets.length > NOTICE_BATCH_IDS || intent.targets.some((t) => !object2(t) || Object.keys(t).some((k) => !["producer", "expected", "ids", "episodes"].includes(k)) || !text2(t.producer) || !integer2(t.expected) || !Array.isArray(t.ids) || !t.ids.length || !t.ids.every((id2) => text2(id2, 512))) || intent.targets.reduce((n, t) => n + t.ids.length, 0) > NOTICE_BATCH_IDS || new Set(intent.targets.map((t) => t.producer)).size !== intent.targets.length) return fail("invalid", "invalid exact-worker retirement batch");
-    const work = [];
-    for (const target of intent.targets) {
-      const record = this.records.get(target.producer);
-      if (!record) return fail("stale", "retirement inventory is unknown");
-      const prior = record.operations[opKey];
-      if (prior && prior.hash !== hash) return fail("invalid", "conflicting retirement retry");
-      const entries = target.ids.map((id2) => record.entries.find((e) => e.id === id2));
-      if (new Set(target.ids).size !== target.ids.length || entries.some((e) => !e || !e.dependencies.some((d) => d.workerId === intent.workerId && d.principal === authority.principal)))
-        return fail("not-yours", "retirement may end only this principal exact-worker dependencies");
-      if (!object2(target.episodes) || Object.keys(target.episodes).length !== target.ids.length || entries.some((e) => target.episodes[e.id] !== e.episode)) return fail("stale", "retirement episode tokens moved");
-      if (!prior && entries.some((e) => e.ended !== void 0)) return fail("stale", "retirement already committed under another operation");
-      if (!prior && (record.revision !== target.expected || entries.some((e) => now > e.until))) return fail("stale", "retirement revision or horizon moved");
-      work.push({ key: target.producer, record, entries, duplicate: !!prior });
-    }
-    for (const item of work) if (!item.duplicate) {
-      const revision = item.record.revision + 1, ids = new Set(item.entries.map((e) => e.id));
-      this.records.set(item.key, {
-        ...item.record,
-        revision,
-        entries: item.record.entries.map((e) => ids.has(e.id) && e.ended === void 0 ? { ...e, ended: now } : e),
-        operations: { ...item.record.operations, [opKey]: { hash, revision } }
-      });
-      this.end(item.entries, now);
-    }
-    this.reassert();
-    return { v: 1, re: "", ok: true, managed: true, duplicate: work.every((w) => w.duplicate), updates: work.map((w) => ({
-      producer: w.key,
-      revision: this.records.get(w.key).revision,
-      ids: w.entries.map((e) => e.id),
-      at: this.records.get(w.key).entries.find((e) => e.id === w.entries[0].id).ended
-    })) };
-  }
-  end(entries, now) {
-    for (const entry of entries) if (!this.room.outcomes.has(entry.id))
-      this.room.outcomes.set(entry.id, { to: entry.to, from: entry.from, outcome: "expired", at: now });
-  }
-  fits(next, key) {
-    const cost = (r, producer2) => bytes(r) + Math.max(132, bytes(producer2) + 2) + r.entries.filter((e) => e.ended === void 0).length * END_RESERVE;
-    const records = [...this.records.entries()].filter(([k]) => k !== key);
-    const producer = records.filter(([, r]) => r.name === next.name && r.workerId === next.workerId);
-    return producer.reduce((n, [, r]) => n + r.entries.length, next.entries.length) <= NOTICE_PRODUCER_IDS && producer.reduce((n, [k, r]) => n + cost(r, k), cost(next, key)) <= NOTICE_PRODUCER_BYTES && records.reduce((n, [, r]) => n + r.entries.length, next.entries.length) <= NOTICE_ROOM_IDS && records.reduce((n, [k, r]) => n + cost(r, k), cost(next, key)) <= NOTICE_ROOM_BYTES;
-  }
-};
+init_conflicts();
 
 // packages/hub-core/src/hub.ts
 var MAINTENANCE_MS = 6e4;
@@ -14736,7 +14697,6 @@ var RoomHub = class {
   constructor(host) {
     this.host = host;
     this.limit = host.counterLimit ?? COUNTER_LIMIT;
-    this.notices = new NoticeInventory(host.doc, () => this.incarnation);
   }
   host;
   incarnation = 0;
@@ -14764,8 +14724,6 @@ var RoomHub = class {
   leaseWriteFailed = false;
   greeted = /* @__PURE__ */ new Set();
   sessions = /* @__PURE__ */ new Map();
-  noticeConnections = /* @__PURE__ */ new WeakSet();
-  notices;
   rates = /* @__PURE__ */ new Map();
   push = () => {
   };
@@ -14776,9 +14734,6 @@ var RoomHub = class {
   };
   get doc() {
     return this.host.doc;
-  }
-  noticeContract(conn, selection) {
-    if (selection.capabilities[NOTICE_CAPABILITY] === 1) this.noticeConnections.add(conn);
   }
   async start() {
     if (this.host.unavailable?.()) throw new Error("hub storage unavailable at startup");
@@ -14846,7 +14801,6 @@ var RoomHub = class {
     this.push = fn;
   }
   closed(conn) {
-    this.noticeConnections.delete(conn);
     this.greeted.delete(conn);
     this.sessions.delete(conn);
     for (const lease of this.leases.values()) if (lease.conn === conn) lease.conn = void 0;
@@ -14955,10 +14909,10 @@ var RoomHub = class {
     return !!session && (lease?.session ? lease.session === session : lease?.holder?.sessionId === session);
   }
   storageUnavailable() {
-    const text3 = this.host.unavailable?.();
-    if (text3) {
+    const text2 = this.host.unavailable?.();
+    if (text2) {
       this.unavailableSince ??= this.host.mono();
-      return text3;
+      return text2;
     }
     if (this.unavailableSince !== void 0) {
       this.unavailableSince = void 0;
@@ -14970,8 +14924,8 @@ var RoomHub = class {
     return void 0;
   }
   unavailable(fail) {
-    const text3 = this.storageUnavailable();
-    return text3 ? fail("unavailable", text3, { retryMs: 1e3 }) : void 0;
+    const text2 = this.storageUnavailable();
+    return text2 ? fail("unavailable", text2, { retryMs: 1e3 }) : void 0;
   }
   limited(key, limit) {
     const now = this.host.mono();
@@ -15099,7 +15053,7 @@ var RoomHub = class {
   // ---- requests ----
   handle(conn, frame, p, frameBytes) {
     const re = hubReplyId(frame);
-    const fail = (reason, text3, extra = {}) => ({ v: 1, re, ok: false, reason, text: text3, ...extra });
+    const fail = (reason, text2, extra = {}) => ({ v: 1, re, ok: false, reason, text: text2, ...extra });
     try {
       return this.handleSafe(conn, frame, p, fail, frameBytes);
     } catch (error) {
@@ -15119,8 +15073,7 @@ var RoomHub = class {
       acquire: ["name", "holder", "supersedes"],
       renew: ["name", "epoch"],
       release: ["name", "epoch"],
-      post: ["lease", "msg", "auto"],
-      "notice-lifecycle": ["lease", "generation", "action", "producer", "expected", "operation", "evidence", "episode", "msg", "workerId", "targets"]
+      post: ["lease", "msg", "auto"]
     };
     const op = frame.op;
     if (fields[op] && Object.keys(frame).some((k) => !["v", "id", "op", ...fields[op]].includes(k))) return fail("invalid", "unknown hub request field");
@@ -15139,43 +15092,9 @@ var RoomHub = class {
         return this.release(conn, req, p, fail);
       case "post":
         return this.post(conn, req, p, fail, starting);
-      case "notice-lifecycle":
-        return this.noticeLifecycle(conn, req, p, fail, starting);
       default:
         return fail("invalid", `unknown op ${JSON.stringify(req.op)}`);
     }
-  }
-  noticeLifecycle(conn, req, p, fail, starting) {
-    if (!this.noticeConnections.has(conn)) return fail("version", "notice lifecycle capability was not negotiated; retain TTL");
-    if (req.generation !== this.incarnation) return fail("stale", "notice authority generation changed");
-    if (!isObject(req.lease) || Object.keys(req.lease).some((k) => !["name", "epoch"].includes(k)) || !isName(req.lease.name) || !isCounter(req.lease.epoch)) return fail("invalid", "notice intent needs a name lease");
-    const unavailable = this.unavailable(fail);
-    if (unavailable) return unavailable;
-    const live = this.live(req.lease.name);
-    if (!live || live.epoch !== req.lease.epoch) return fail("stale", "notice name lease is no longer live");
-    if (!this.owner(conn, p, req.lease.name, live)) return fail("not-yours", "notice intent belongs to another principal or session");
-    if (isObject(req.evidence) && Array.isArray(req.evidence.names)) for (const name of req.evidence.names) {
-      if (typeof name !== "string") continue;
-      const known = this.records.get(name), expected = known && this.recordOf(known), mirror = this.record(name);
-      if (expected ? !sameRecord(mirror, expected) : !!mirror) return fail("stale", "notice participant authority mirror moved");
-    }
-    if (this.settling() || !this.reserve("seq", req.action === "register" ? 1 : 0)) return starting();
-    const authority = {
-      name: req.lease.name,
-      epoch: live.epoch,
-      session: this.sessions.get(conn),
-      principal: live.principal,
-      ...live.holder?.workerId ? { workerId: live.holder.workerId } : {}
-    };
-    const { v: _v, id: _id, op: _op, lease: _lease, generation: _generation, ...intent } = req;
-    let reply;
-    this.doc.doc.transact(() => {
-      reply = this.notices.apply(intent, authority, this.host.wall(), (msg) => this.post(conn, { v: 1, id: req.id, op: "post", lease: req.lease, msg, auto: true }, p, fail, starting), (name) => {
-        const known = this.records.get(name);
-        return known?.holder?.workerId && known.principal ? { workerId: known.holder.workerId, principal: known.principal } : void 0;
-      }, fail);
-    }, HUB_ORIGIN);
-    return { ...reply, re: req.id };
   }
   hello(conn, req, fail) {
     if (req.proto !== HUB_PROTO) {
@@ -15280,7 +15199,7 @@ var RoomHub = class {
       const seq = found.seq;
       return { v: 1, re: req.id, ok: true, ...isCounter(seq) ? { seq } : {}, at: found.at, duplicate: true };
     }
-    if (this.doc.archive.has(msg.id) || this.doc.outcomes.has(msg.id) || this.notices.registered(msg.id)) return { v: 1, re: req.id, ok: true, duplicate: true, gone: true };
+    if (this.doc.archive.has(msg.id) || this.doc.outcomes.has(msg.id)) return { v: 1, re: req.id, ok: true, duplicate: true, gone: true };
     const size2 = sizeOf2(msg);
     if (size2 > MAX_MESSAGE_BYTES) return fail("too-large", `the message is ${Math.ceil(size2 / 1024)} KiB; the limit is ${MAX_MESSAGE_BYTES / 1024} KiB`);
     if (this.host.full?.()) return fail("room-full", "this room's document is over its size limit; close and reopen the repo, or ask the operator to raise ROOM_DOC_MAX_MB");
@@ -15373,7 +15292,6 @@ var RoomHub = class {
     const { doc } = this;
     const archived = (id2) => doc.archive.has(id2) || doc.outcomes.has(id2);
     doc.doc.transact(() => {
-      this.notices.reassert();
       const names = new Set(this.records.keys());
       for (const [key, value2] of doc.participants.entries()) if (key.endsWith(HOLDER) && hubHolder(value2)) names.add(key.slice(0, -HOLDER.length));
       for (const name of names) {
@@ -15512,8 +15430,8 @@ var DocSizeMeter = class {
     const c = this.cached;
     const stale = !c || this.now() - c.at >= this.maxAgeMs || this.writes >= this.maxWrites || this.received >= this.maxBytes;
     if (stale) {
-      const bytes2 = this.measure();
-      this.cached = { at: this.now(), bytes: bytes2 };
+      const bytes = this.measure();
+      this.cached = { at: this.now(), bytes };
       this.writes = 0;
       this.received = 0;
     }
@@ -15563,12 +15481,12 @@ function incarnationFile(file, io) {
 // packages/relay/src/hub.ts
 import fs5 from "node:fs";
 import path6 from "node:path";
-import { createHash as createHash3, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash2, randomUUID as randomUUID2 } from "node:crypto";
 
 // packages/relay/src/leases.ts
 import fs4 from "node:fs";
 import path5 from "node:path";
-import { createHash as createHash2, randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 
 // packages/relay/src/private-state.ts
 import fs2 from "node:fs";
@@ -16117,7 +16035,7 @@ function ensureDurableDirectory(dir, holdsFile = true) {
   }
   syncDirectory(parent);
 }
-var startMarker = (startTime) => createHash2("sha256").update(startTime).digest("hex").slice(0, 24);
+var startMarker = (startTime) => createHash("sha256").update(startTime).digest("hex").slice(0, 24);
 var tempPattern = /\.roomtmp-p(\d+)-s([a-f0-9]{24}|u)-n[0-9a-f-]{36}\.tmp$/;
 function cleanupOrphanTemps(dir, probe = probeProcess) {
   let removed = 0;
@@ -16361,7 +16279,7 @@ function incarnationFile2(commonDir) {
   return incarnationFile(file, { nullIsMissing: true, read: (file2) => fs5.readFileSync(file2, "utf8"), write: writeAtomic });
 }
 function relayLeaseFile(commonDir, room) {
-  const file = path6.join(commonDir, "room", "hub-leases", `${createHash3("sha256").update(room).digest("hex")}.json`);
+  const file = path6.join(commonDir, "room", "hub-leases", `${createHash2("sha256").update(room).digest("hex")}.json`);
   return {
     read: async () => {
       try {
@@ -16509,7 +16427,7 @@ var stderr = (line) => {
   process.stderr.write(`${line}
 `);
 };
-var mb = (bytes2) => (bytes2 / 1048576).toFixed(1);
+var mb = (bytes) => (bytes / 1048576).toFixed(1);
 var WARN_EVERY_MS = 6e4;
 var WARN_KEYS_MAX = 64;
 var WarningLimiter = class {
@@ -16573,11 +16491,11 @@ var MemoryLoadError = class extends Error {
 };
 function loadMemory(commonDir, room, log2 = stderr) {
   const file = memoryFile(commonDir, room);
-  let bytes2;
+  let bytes;
   try {
     if (fs6.statSync(file).size > ROOM_DOC_MAX_BYTES) throw new MemoryLoadError("capacity", file, "snapshot exceeds load ceiling");
     if (process.platform === "win32") verifyPrivatePath(file);
-    bytes2 = fs6.readFileSync(file);
+    bytes = fs6.readFileSync(file);
   } catch (e) {
     if (e.code === "ENOENT") return new Doc();
     const error = e instanceof MemoryLoadError ? e : new MemoryLoadError("unreadable", file, e);
@@ -16586,7 +16504,7 @@ function loadMemory(commonDir, room, log2 = stderr) {
   }
   const doc = new Doc();
   try {
-    applyUpdate(doc, bytes2);
+    applyUpdate(doc, bytes);
     const schema = doc.getMap("meta").get("schemaVersion");
     if (schema !== void 0 && schema !== 2) throw new Error("unsupported snapshot schema");
     return doc;
@@ -17319,8 +17237,8 @@ function boundRelayBootstrapInput(conn) {
   const maximum = receiver?._maxPayload;
   if (!receiver || typeof maximum !== "number" || !Number.isFinite(maximum) || maximum < 0) throw new Error("unsupported websocket receiver payload limit; update/restart Room");
   return {
-    remaining: (bytes2) => {
-      receiver._maxPayload = Math.max(1, Math.min(maximum || Infinity, bytes2));
+    remaining: (bytes) => {
+      receiver._maxPayload = Math.max(1, Math.min(maximum || Infinity, bytes));
     },
     restore: () => {
       receiver._maxPayload = maximum;
@@ -17343,40 +17261,40 @@ function full(conn) {
     if (conn.readyState !== conn.CLOSED) conn.terminate();
   }, 1e3).unref?.();
 }
-function capacityFor(bytes2, except) {
-  if (totalQueued + stateReservation + bytes2 > RELAY_TOTAL_QUEUE_BYTES) {
+function capacityFor(bytes, except) {
+  if (totalQueued + stateReservation + bytes > RELAY_TOTAL_QUEUE_BYTES) {
     for (const [slow, amount] of [...queued].sort((a, b) => b[1] - a[1])) {
-      if (totalQueued + stateReservation + bytes2 <= RELAY_TOTAL_QUEUE_BYTES) break;
+      if (totalQueued + stateReservation + bytes <= RELAY_TOTAL_QUEUE_BYTES) break;
       if (slow === except || amount === 0) continue;
       slow.close(1013, "relay output queue full");
       slow.terminate();
       dropSocket(slow);
     }
   }
-  return totalQueued + stateReservation + bytes2 <= RELAY_TOTAL_QUEUE_BYTES;
+  return totalQueued + stateReservation + bytes <= RELAY_TOTAL_QUEUE_BYTES;
 }
 function send(conn, buf) {
   if (conn.readyState !== conn.OPEN) return;
   const session = sessions.get(conn);
   if (!session?.ready) return;
-  const bytes2 = buf.byteLength + 16;
+  const bytes = buf.byteLength + 16;
   const own = queued.get(conn) ?? 0;
-  if (own > 0 && own + bytes2 > (socketBudgets.get(conn) ?? RELAY_SOCKET_QUEUE_BYTES)) {
+  if (own > 0 && own + bytes > (socketBudgets.get(conn) ?? RELAY_SOCKET_QUEUE_BYTES)) {
     full(conn);
     return;
   }
-  if (!capacityFor(bytes2, conn)) {
+  if (!capacityFor(bytes, conn)) {
     full(conn);
     return;
   }
   try {
     const frame = session.encrypt(buf);
-    queued.set(conn, own + bytes2);
-    totalQueued += bytes2;
+    queued.set(conn, own + bytes);
+    totalQueued += bytes;
     conn.send(frame, (error) => {
       if (queued.has(conn)) {
-        queued.set(conn, Math.max(0, (queued.get(conn) ?? 0) - bytes2));
-        totalQueued -= bytes2;
+        queued.set(conn, Math.max(0, (queued.get(conn) ?? 0) - bytes));
+        totalQueued -= bytes;
       }
       if (error) full(conn);
     });
@@ -17541,7 +17459,7 @@ function attachNegotiating(docs, conn, name, req, opts, first) {
   let hello;
   let selection;
   let selectedDoc;
-  let timer, expiresAt = 0, bytes2 = 0;
+  let timer, expiresAt = 0, bytes = 0;
   const cleanup = () => {
     clearTimeout(timer);
     conn.off("message", receive);
@@ -17570,12 +17488,12 @@ function attachNegotiating(docs, conn, name, req, opts, first) {
       refuse("compatibility handshake timed out; reconnect Room");
       return;
     }
-    bytes2 += plain.byteLength;
-    if (bytes2 > BOOTSTRAP_MAX_BYTES || plain[0] !== MSG_HUB) {
+    bytes += plain.byteLength;
+    if (bytes > BOOTSTRAP_MAX_BYTES || plain[0] !== MSG_HUB) {
       refuse("compatibility hello/ack required before sync");
       return;
     }
-    bootstrapInputs.get(conn).remaining(BOOTSTRAP_MAX_BYTES - bytes2 + 16);
+    bootstrapInputs.get(conn).remaining(BOOTSTRAP_MAX_BYTES - bytes + 16);
     let frame;
     try {
       const decoder = createDecoder(plain);
@@ -17677,7 +17595,6 @@ function attachNegotiating(docs, conn, name, req, opts, first) {
         conn.close(1013, "relay hub session unavailable; reconnect Room");
         return;
       }
-      selectedDoc.hub.noticeContract(conn, selection.selection);
     }
     phase = "done";
     cleanup();
@@ -17761,7 +17678,7 @@ function attachReady(docs, conn, name, opts, req) {
       return;
     }
     const { cap } = d;
-    const over = opts.readOnly ? void 0 : sizeCapRefusal(buf, (bytes2) => d.memory?.status.capacity ? cap.maxBytes + 1 : cap.meter.size(bytes2), cap.maxBytes, { allowNonGrowing: true });
+    const over = opts.readOnly ? void 0 : sizeCapRefusal(buf, (bytes) => d.memory?.status.capacity ? cap.maxBytes + 1 : cap.meter.size(bytes), cap.maxBytes, { allowNonGrowing: true });
     if (over !== void 0) {
       const now = Date.now();
       if (cap.logged < now - 6e4) {
