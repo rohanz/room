@@ -195,7 +195,8 @@ it("reads a projected worker conflict in the team room and sends the worker an o
   publish(team, 'Kieran', 'x = 4\n')
   try {
     await reconcileProjectedConflicts({ team, workers, owner: workerId.name })
-    expect(openConflicts(team.room, lead.name)).toHaveLength(1)
+    // The first projected pass can read a publication as not yet settled; the next pass confirms it.
+    await vi.waitFor(() => expect(openConflicts(team.room, lead.name)).toHaveLength(1))
     expect(t.leadTools.ledger.candidates(team).filter(isConflictItem)).toHaveLength(1)
     await vi.waitFor(() => expect(woken).toHaveLength(1))
     const conflicts = [openConflicts(team.room, lead.name), openConflicts(team.room, workerId.name)].flat()
