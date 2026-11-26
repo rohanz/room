@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc, compactDoc, holderFence, participantRecord } from '@room/shared'
+import { RoomDoc, openConflicts, formatConflictLine, type ConflictSlot, compactDoc, holderFence, participantRecord } from '@room/shared'
 import type { Identity, ClaimMsg, QuestionMsg, AnswerMsg, ScopeMsg, NoteMsg, ReleaseMsg } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import { GraphIndex } from '../src/graph-index.js'
@@ -467,4 +467,40 @@ it.each([Buffer.from([0, 0]), Buffer.from([0, 0, 0, 10, 1]), Buffer.from([127, 2
   vi.stubGlobal('fetch', vi.fn(async () => new Response(body, { headers: { 'content-type': 'application/vnd.room.updates' } })))
   try { await expect(exportArchiveLedger(s, 'git/x/o/r/main', { path: join(dir, 'bad-frame.md') })).rejects.toThrow(/archive frame/) }
   finally { s.room.doc.destroy(); vi.unstubAllGlobals() }
+})
+
+
+describe('current conflict state in PR notes', () => {
+  it.each(['merge', 'edit-in-claim', 'claims', 'contract'] as const)('lists an open %s from state without messages and removes it when clean', kind => {
+    const room = new RoomDoc()
+    const slots = room.doc.getMap<ConflictSlot>('conflicts')
+    const slot: ConflictSlot = { openId: 'pr-current', endpoints: [{ name: 'alice' }, { name: 'bob' }], kind, owner: 'alice', other: 'bob', path: kind + '.ts', subject: 'symbol', status: 'conflict', settled: 'conflict', inputs: '', factId: '', fence: '', checkedAt: 1, lines: [2] }
+    slots.set('state', slot)
+    const text = formatConflictLine(openConflicts(room, 'alice')[0])
+    expect(renderPrNote(room, { roomName: ROOM })).toContain(text)
+    expect(renderPrNote(room, { roomName: ROOM, history: true })).toContain(text)
+    slots.set('state', { ...slot, status: 'clean', settled: 'clean' })
+    expect(renderPrNote(room, { roomName: ROOM })).not.toContain(text)
+    room.doc.destroy()
+  })
+
+  it('keeps a large current conflict section within the PR request budget', () => {
+    const room = new RoomDoc()
+    const slots = room.doc.getMap<ConflictSlot>('conflicts')
+    for (let i = 0; i < 40; i++) slots.set(String(i), { openId: 'pr-contract-' + i, endpoints: [{ name: 'alice' }, { name: 'bob' }], kind: 'contract', owner: 'alice', other: 'bob', path: 'a.ts', subject: 'f' + i, status: 'conflict', settled: 'conflict', inputs: '', factId: '', fence: '', checkedAt: 1, why: 'x'.repeat(100_000) })
+    const md = renderPrNote(room, { roomName: ROOM })
+    expect(Buffer.byteLength(JSON.stringify(md))).toBeLessThanOrEqual(3 * 1024 * 1024)
+    expect(md).toContain('open conflicts omitted')
+    room.doc.destroy()
+  })
+
+  it('ignores legacy conflict messages that remain stored', () => {
+    const room = new RoomDoc()
+    for (const type of ['merge-conflict', 'conflict', 'contract']) room.bus.push([{ id: type, type, at: 1, from: 'room', fromKind: 'agent', priority: 'notify', path: 'old.ts', text: 'retired conflict body' } as never])
+    room.archive.set('old-archive', ['conflict', 'room', 1, []] as never)
+    expect(renderPrNote(room, { roomName: ROOM })).not.toContain('Earlier compact history')
+    expect(renderPrNote(room, { roomName: ROOM })).not.toContain('retired conflict body')
+    expect(renderPrNote(room, { roomName: ROOM, history: true })).not.toContain('retired conflict body')
+    room.doc.destroy()
+  })
 })

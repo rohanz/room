@@ -1,5 +1,4 @@
 import * as Y from 'yjs'
-import { retiredNoticeMatcher } from './notice-subjects.js'
 import { BusIndex } from './bus-index.js'
 import type { RoomDoc } from './doc.js'
 import { messageAreas } from './ledger.js'
@@ -80,9 +79,14 @@ export function retireRecipient(doc: RoomDoc, recipient: string | ReadonlySet<st
   })
 }
 
+/** Obsolete bus conversion kinds: state is their only delivery source now. */
+export function isLegacyConflictMessage(message: { type?: unknown } | null | undefined): boolean {
+  return message?.type === 'conflict' || message?.type === 'merge-conflict' || message?.type === 'contract'
+}
+
 /** Addressed, with neither a receipt nor a terminal outcome. */
 function isOwed(doc: RoomDoc, m: Msg): boolean {
-  return !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id)
+  return !isLegacyConflictMessage(m) && !!m.to && !selfSent(m) && !doc.outcomes.has(m.id) && !receipted(doc, m.to, m.id)
 }
 
 function repliedNoteIds(messages: Iterable<Msg>): Set<string> {
@@ -116,9 +120,8 @@ export function highestSeq(doc: RoomDoc): number {
 export function owed(doc: RoomDoc, me: Pick<Identity, 'name'>, cursor: DeliveryCursor, route: MessageRouteContext,
   relevant: (m: Msg) => boolean = () => true): Msg[] {
   const out = new Map<string, Msg>()
-  const retiredNotice = retiredNoticeMatcher(doc.retiredWorkers())
   const offer = (m: Msg) => {
-    if (retiredNotice(m)) return
+    if (isLegacyConflictMessage(m)) return
     if (!out.has(m.id) && !doc.outcomes.has(m.id) && !receipted(doc, me.name, m.id) && relevant(m)) out.set(m.id, m)
   }
   // Addressed messages are owed whenever they were sent, except to a worker that took over the name after them.
@@ -296,6 +299,13 @@ export class DeliveryIndex {
   private oldest = Infinity
   private oldestOutcome = Infinity
   private changed = new Set<string>()
+  private messageChanges = new Set<string>()
+  private readonly messageListeners = new Set<(changes: ReadonlyMap<string, readonly Msg[]>) => void>()
+  /** Bus/mail body changes, using the existing changed-key index; receipts do not replay bodies. */
+  onMessagesChanged(listener: (changes: ReadonlyMap<string, readonly Msg[]>) => void): () => void {
+    this.messageListeners.add(listener)
+    return () => this.messageListeners.delete(listener)
+  }
   private rebuildPending = false
   private rootNames = new Map<Y.AbstractType<any>, string>()
   private readonly afterTransaction = (tx: Y.Transaction) => {
@@ -307,10 +317,14 @@ export class DeliveryIndex {
       if (!(type instanceof Y.Map) || !this.rootNames.get(type)?.startsWith('seen:')) continue
       for (const key of keys) if (key !== null) this.changed.add(key)
     }
-    const changed = this.changed
-    this.changed = new Set()
+    const changed = this.changed, messages = this.messageChanges
+    this.changed = new Set(); this.messageChanges = new Set()
     if (this.rebuildPending) { this.rebuildPending = false; this.rebuildAggregates() }
     else this.refreshMany(changed)
+    if (messages.size && this.messageListeners.size) {
+      const copies = new Map([...messages].map(id => [id, [...this.mailCopies.get(id)?.values() ?? [], ...this.bus.ids.get(id)?.values() ?? []]]))
+      for (const listener of this.messageListeners) listener(copies)
+    }
   }
 
   private cacheRoots(): void {
@@ -320,6 +334,7 @@ export class DeliveryIndex {
   constructor(readonly doc: RoomDoc) {
     this.bus = new BusIndex(doc.bus, (ids, rebuilt) => {
       this.clean = false
+      for (const id of ids) this.messageChanges.add(id)
       if (rebuilt) this.rebuildPending = true
       else for (const id of ids) this.changed.add(id)
     })
@@ -327,9 +342,9 @@ export class DeliveryIndex {
       for (const key of e.keysChanged) {
         const oldId = this.mailIds.get(key)
         this.checkMail(key)
-        if (oldId !== undefined) this.changed.add(oldId)
+        if (oldId !== undefined) { this.changed.add(oldId); this.messageChanges.add(oldId) }
         const id = this.mailIds.get(key)
-        if (id !== undefined) this.changed.add(id)
+        if (id !== undefined) { this.changed.add(id); this.messageChanges.add(id) }
       }
     })
     doc.outcomes.observe(e => {

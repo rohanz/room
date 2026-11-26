@@ -473,30 +473,24 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .code-line.side-a, .code-line.side-b { background: var(--code-bg); box-shadow: inset 3px 0 var(--line-owner); }
 
 /* Conflict annotations live at the right edge; ownership remains on each line. */
-:root { --change-tint: 14%; --conflict-tint: 22%; --conflict-red: #B42318; --claim-amber: #B54708; }
+:root { --change-tint: 14%; --conflict-tint: 22%; --conflict-red: #B42318; }
 .conflict-code-grid { display: grid; align-content: start; width: max-content; min-width: 100%; overflow: visible; }
 .conflict-code-grid > .line-text { grid-column: 1 / -1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(0, 1fr); min-width: 0; overflow: visible; }
-:root[data-theme="dark"] { --change-tint: 20%; --conflict-tint: 28%; --conflict-red: #F97066; --claim-amber: #F79009; }
+:root[data-theme="dark"] { --change-tint: 20%; --conflict-tint: 28%; --conflict-red: #F97066; }
 @media (prefers-color-scheme: dark) {
-  :root[data-theme="system"] { --change-tint: 20%; --conflict-tint: 28%; --conflict-red: #F97066; --claim-amber: #F79009; }
+  :root[data-theme="system"] { --change-tint: 20%; --conflict-tint: 28%; --conflict-red: #F97066; }
 }
 .conflict-code-grid .code-line { grid-template-columns: 32px 32px 14px minmax(max-content, 1fr) 96px; overflow: visible; white-space: pre; background: var(--code-bg); padding-right: 0; border-left: 2px solid transparent; box-shadow: none; color: var(--code-ink); }
 .conflict-code-grid .changed-line { border-left-color: color-mix(in srgb, var(--line-change-owner) 60%, transparent); background: color-mix(in srgb, var(--line-change-owner) var(--change-tint), var(--code-bg)); }
-.conflict-code-grid :is(.conflict-line, .resolved-conflict-line)[data-owner] { background: color-mix(in srgb, var(--line-owner) var(--conflict-tint), var(--code-bg)); }
+.conflict-code-grid .conflict-line[data-owner] { background: color-mix(in srgb, var(--line-owner) var(--conflict-tint), var(--code-bg)); }
 .conflict-edge { position: sticky; right: 0; z-index: 3; grid-column: 2; display: grid; grid-template-rows: subgrid; column-gap: 2px; justify-content: end; overflow: hidden; }
 .conflict-bar { position: relative; width: 2px; min-width: 2px; min-height: 0; background: var(--conflict-red); color: var(--conflict-red); }
-.conflict-bar.claim-overlap { background: var(--claim-amber); color: var(--claim-amber); }
 .conflict-code-grid.merged-code .code-line { grid-template-columns: 32px 12px 14px minmax(max-content, 1fr) 96px; }
 .side-marker { background: none; border: none; display: flex; align-items: center; justify-content: center; }
 .side-marker .dot { width: 5px; height: 5px; margin: 0; }
-.merged-code .claim-overlap-line:not(.conflict-line):not(.changed-line) { background: var(--code-bg); }
-.conflict-bar.resolved { background: var(--muted); color: var(--muted); }
 .conflict-tag { position: static; max-width: 100%; overflow: hidden; text-overflow: ellipsis; flex-shrink: 0; padding: 0; border: 0; border-radius: 0; box-shadow: none; font: 11px/17px var(--sans); color: var(--conflict-red); background: transparent; white-space: nowrap; text-align: right; }
-.conflict-tag.claim-overlap { color: var(--claim-amber); }
-.conflict-tag.resolved { color: var(--muted); }
 .conflict-tag:focus-visible { outline-offset: 0; }
 .conflict-card { padding: 12px; border-left: 3px solid var(--danger); background: var(--surface); font-size: 12px; }
-.conflict-card.resolved { border-color: var(--muted); }
 .conflict-card details { margin-top: 8px; }
 
 .theme-switcher { flex: none; }
@@ -762,3 +756,8 @@ summary { cursor: pointer; color: var(--heading); padding: 8px 0; }
 .filter-chip[hidden], .merge-chip[hidden] { display: none; }
 .timeline-more { margin: 8px; color: var(--muted); }
 .state-pill.failed { background: var(--danger-bg); color: var(--danger-ink); }
+
+.open-conflicts { padding: 16px; }
+.open-conflicts h3, .open-conflicts h2 { margin: 0 0 10px; font-size: 13px; }
+.open-conflict-list { display: flex; flex-direction: column; gap: 9px; }
+.conflict-evidence { margin-top: 4px; }

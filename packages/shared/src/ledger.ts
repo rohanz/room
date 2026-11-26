@@ -12,7 +12,7 @@ export function compactRetiredWorker(record: RetiredWorker): RetiredWorker {
 }
 
 export type LedgerEntry = Msg
-const LEDGER_TYPES = new Set<Msg['type']>(['scope', 'claim', 'changed', 'release', 'conflict', 'base', 'plan'])
+const LEDGER_TYPES = new Set<Msg['type']>(['scope', 'claim', 'changed', 'release', 'base', 'plan'])
 
 /** Paths a bus message touches. */
 export function msgPaths(m: Msg): string[] {
@@ -38,7 +38,7 @@ export function messageAreas(m: Msg, scopes: readonly Scope[]): string[] {
 
 /**
  * Derived view over the bus: entries that record work (scope, claim, changed, release,
- * conflict), filtered by area (via the scopes that name it) and/or path.
+ * plans), filtered by area (via the scopes that name it) and/or path.
  */
 export function ledger(messages: readonly Msg[], scopes: readonly Scope[], q: LedgerQuery = {}): LedgerEntry[] {
   const areaScopes = q.area ? scopes.filter(s => s.area === q.area) : []

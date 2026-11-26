@@ -182,7 +182,7 @@ it('keeps revision denials when a stale live head arrives before the next save',
   const saved = restore(cold).next
   expect(cache(saved).size).toBe(0)
   expect([...saved.doc.getMap('completedPublicationRevisions').values()]).toEqual([
-    { name, epoch: 1, semRev: 2, rev: 1 },
+    { name, epoch: 1, semRev: 2, rev: 1, level: 'intent' },
   ])
 })
 
@@ -207,7 +207,7 @@ it('compacts immutable revision markers to the latest per name on every save', (
   expect(merged.doc.getMap('completedPublicationRevisions').size).toBe(4)
   const saved = restore(merged).next
   expect([...saved.doc.getMap('completedPublicationRevisions').values()]).toEqual([
-    { name, epoch: 1, semRev: 4, rev: 1 },
+    { name, epoch: 1, semRev: 4, rev: 1, level: 'declared' },
   ])
   expect([...cache(saved).values()].map(p => p.head.semRev)).toEqual([4])
 })

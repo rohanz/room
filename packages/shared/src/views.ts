@@ -1,4 +1,5 @@
 import { describeClaim } from './claims.js'
+import type { ConflictSlot } from './conflicts.js'
 import { retainedPublication } from './worker-memory.js'
 import { describeIdentity, isAgentic } from './identity.js'
 import { holderFence, participantRecord, type ParticipantGit, type ParticipantHolder, type ParticipantRecord, type RoomDoc } from './doc.js'
@@ -432,116 +433,21 @@ export function workerLines(inputs: readonly WorkerLineInput[], options: { all?:
   return out
 }
 
-export interface ConflictResolution {
-  how: 'released' | 'narrowed' | 'merged clean'
-  who?: string
-  at: number
-}
-export interface ConflictSpan {
-  id: string
-  path: string
-  people: string[]
-  claimIds: string[]
-  from?: number
-  to?: number
-  at: number
-  events: import('./types.js').Msg[]
-  claims: Claim[]
-  resolvedBy?: ConflictResolution
-  hidden: boolean
-  /** Every editor's latest notice has `merges` (ConflictMsg): an overlap that merges cleanly, not a conflict. */
-  merges?: 'clean'
-}
-
-/** An unresolved span's status, in the notices' words: "overlap" when it merges cleanly, "conflict" otherwise. */
-export const conflictSpanStatus = (span: Pick<ConflictSpan, 'merges'>): string =>
-  span.merges === 'clean' ? 'Overlap: merges cleanly' : 'Unresolved conflict'
-
-/** Reconstruct conflict history from existing bus facts; never manufacture a timestamp.
- * Missing claims alone are not proof of release (the rolling bus may be incomplete).
- */
-export function deriveConflictSpans(messages: readonly import('./types.js').Msg[], claims: readonly Claim[]): ConflictSpan[] {
-  const bus = [...messages].sort((a, b) => a.at - b.at)
-  const known = new Map<string, Claim>()
-  for (const m of bus) if (m.type === 'claim' && !known.has(m.claimId)) known.set(m.claimId, { id: m.claimId, path: m.path, from: m.from_line, to: m.to_line, by: m.from, byKind: m.fromKind, intent: m.intent, plans: m.plans, at: m.at })
-  const current = new Map(claims.map(c => [c.id, c]))
-  for (const c of claims) if (!known.has(c.id)) known.set(c.id, c)
-  const spans: ConflictSpan[] = []
-  /** Per span, each editor's latest `merges`: one editor's clean overlap does not hide another's conflict. */
-  const merging = new Map<ConflictSpan, Map<string, 'clean' | undefined>>()
-  const pairKey = (path: string, people: string[]) => JSON.stringify([path, [...people].sort()])
-  for (const m of bus) {
-    let path: string, people: string[], ids: string[] = [], from: number | undefined, to: number | undefined
-    if (m.type === 'conflict') {
-      path = m.path
-      ids = [m.claimId, m.otherClaimId].filter(Boolean).sort()
-      people = ids.flatMap(id => known.get(id)?.by ?? [])
-      if (people.length < 2) {
-        const editor = m.text.match(/^(.+?)'s agent edited /)?.[1] ?? (m.text.startsWith('you edited ') ? m.to : undefined)
-        if (editor) people.push(editor)
-      }
-      const range = m.text.slice(m.text.indexOf(`${path}:`) + path.length + 1).match(/^(\d+)-(\d+)/)
-      if (range) { from = Number(range[1]); to = Number(range[2]) }
-    } else if (m.type === 'note') {
-      const match = m.text.match(/^your (.+) and (.+)'s now conflict around lines? ([\d, ]+);/)
-      if (!match || !m.to) continue
-      path = match[1]; people = [m.to, match[2]]
-      const lines = match[3].split(',').map(Number)
-      from = Math.min(...lines); to = Math.max(...lines)
-    } else continue
-    people = [...new Set(people)].sort()
-    const cs = ids.flatMap(id => known.get(id) ?? [])
-    if (cs.length === 2) { from = Math.max(...cs.map(c => c.from)); to = Math.min(...cs.map(c => c.to)) }
-    const id = ids.length ? JSON.stringify([path, ids]) : pairKey(path, people)
-    let span = spans.find(s => s.id === id || (people.length === 2 && pairKey(s.path, s.people) === pairKey(path, people) && ids.length === 0 && s.claimIds.length === 0))
-    if (!span) { span = { id, path, people, claimIds: ids, from, to, at: m.at, events: [], claims: cs, hidden: false }; spans.push(span) }
-    if (ids.length === 2 && span.claimIds.length < 2) { span.claimIds = ids; span.claims = cs }
-    span.events.push(m)
-    if (m.type === 'conflict') {
-      // The editor's own notice is addressed to them; the holder's copy names them first.
-      const holder = known.get(m.claimId)?.by
-      const editor = m.to && m.to !== holder ? m.to : m.text.match(/^(.+?)(?:'s agent edited | edited |'s earlier change to )/)?.[1] ?? m.to ?? ''
-      const editors = merging.get(span) ?? new Map<string, 'clean' | undefined>()
-      merging.set(span, editors)
-      // A cleared editor no longer overlaps; with none left, the clearing notice says what it was.
-      if (m.clearedFrom) editors.delete(editor)
-      else editors.set(editor, m.merges)
-      span.merges = !editors.size ? m.merges : [...editors.values()].every(value => value === 'clean') ? 'clean' : undefined
-    }
-  }
-  // Claims can overlap before a conflict notification is delivered.
-  for (let i = 0; i < claims.length; i++) for (const b of claims.slice(i + 1)) {
-    const a = claims[i]
-    if (a.by === b.by || a.path !== b.path || a.from > b.to || b.from > a.to) continue
-    const ids = [a.id, b.id].sort(), id = JSON.stringify([a.path, ids])
-    const existing = spans.find(s => s.claimIds.join() === ids.join() || (s.claimIds.length === 0 && s.at >= Math.max(a.at, b.at) && pairKey(s.path, s.people) === pairKey(a.path, [a.by, b.by])))
-    if (existing && existing.claimIds.length < 2) { existing.claimIds = ids; existing.claims = [a, b] }
-    if (!existing) spans.push({ id, path: a.path, people: [a.by, b.by].sort(), claimIds: ids, from: Math.max(a.from, b.from), to: Math.min(a.to, b.to), at: Math.max(a.at, b.at), events: [], claims: [a, b], hidden: false })
-  }
-  for (const s of spans) {
-    const lastConflict = s.events.at(-1)?.at ?? s.at
-    for (const m of bus) {
-      if (m.at < lastConflict) continue
-      let resolution: ConflictResolution | undefined
-      if (m.type === 'release' && s.claimIds.includes(m.claimId)) resolution = { how: 'released', who: m.from, at: m.at }
-      if (m.type === 'note' && s.claimIds.length === 0 && s.people.some(person => m.to === person && m.text === `your ${s.path} and ${s.people.find(p => p !== person)}'s merge cleanly again`)) resolution = { how: 'merged clean', who: m.to, at: m.at }
-      if (resolution) { s.resolvedBy ??= resolution; s.events.push(m) }
-    }
-    const live = s.claimIds.flatMap(id => current.get(id) ?? [])
-    if (!s.resolvedBy && live.length === 2 && (live[0].path !== live[1].path || live[0].from > live[1].to || live[1].from > live[0].to)) {
-      const changed = [...live].sort((a, b) => b.at - a.at)[0]
-      s.resolvedBy = { how: 'narrowed', who: changed.by, at: Math.max(lastConflict, changed.at) }
-    }
-    s.claims = s.claimIds.flatMap(id => current.get(id) ?? known.get(id) ?? [])
-  }
-  return spans
+/** Evidence time is never inferred from a diagnostic check's timestamp. */
+export function formatConflictEvidence(slot: Pick<ConflictSlot, 'confirmedAt' | 'status'>): string {
+  const at = slot.confirmedAt
+  const date = typeof at === 'number' && at > 0 ? new Date(at) : undefined
+  const confirmed = date && Number.isFinite(date.getTime())
+    ? 'Last confirmed ' + date.toISOString().replace('T', ' ').replace('.000Z', 'Z').replace('Z', ' UTC')
+    : 'Confirmation time unavailable'
+  return confirmed + (slot.status === 'unknown' ? '; recheck unavailable' : '')
 }
 
 /** Shared facts for the compact annotation and expanded code-line details. */
 export interface LineDetailInput {
   owners?: readonly string[]
   claims?: readonly Claim[]
-  conflicts?: readonly { people: readonly string[]; detail?: string; resolved: boolean; overlap?: boolean; range?: string; status?: string; resolution?: string }[]
+  conflicts?: readonly { people: readonly string[]; detail?: string; range?: string; status?: string }[]
 }
 
 export function lineDetail(input: LineDetailInput) {
@@ -551,9 +457,8 @@ export function lineDetail(input: LineDetailInput) {
   const ownership = owners.length ? 'changed by ' + owners.join(' and ') : 'unchanged from base'
   const sections = [
     { label: 'Line', rows: [ownership] },
-    { label: 'Conflict', rows: [...new Set(conflicts.flatMap(c => [c.people.join(' ↔ '), c.range, c.status ?? (c.resolved ? 'Resolved' : 'Unresolved conflict')]).filter((row): row is string => !!row))] },
+    { label: 'Conflict', rows: [...new Set(conflicts.flatMap(c => [c.people.join(' ↔ '), c.range, c.status ?? 'Unresolved conflict']).filter((row): row is string => !!row))] },
     { label: 'Claims', rows: claims.map(c => [c.by, c.intent, c.plans?.map(p => p.kind + ' ' + p.symbol + (p.detail ? ' to ' + p.detail : '')).join(' · ')].filter(Boolean).join(' · ')) },
-    { label: 'Resolution', rows: [...new Set(conflicts.flatMap(c => c.resolved && c.resolution ? [c.resolution] : []))] },
   ].filter(section => section.rows.length)
   return { owners, claims, conflicts, ownership, sections }
 
@@ -561,8 +466,8 @@ export function lineDetail(input: LineDetailInput) {
 
 export function lineAnnotation(input: LineDetailInput): string {
   const detail = lineDetail(input)
-  const conflict = detail.conflicts.find(c => !c.resolved && !c.overlap) ?? detail.conflicts.find(c => !c.resolved) ?? detail.conflicts[0]
-  if (conflict) return conflict.people.join(' ↔ ') + (conflict.resolved ? ' · resolved' : conflict.overlap ? ' · overlap' : ' · conflict')
+  const conflict = detail.conflicts[0]
+  if (conflict) return conflict.people.join(' ↔ ') + ' · conflict'
   if (detail.claims.length) return detail.claims.map(c => c.by + ' · claimed: ' + c.intent).join(' · ')
   return detail.ownership
 }

@@ -160,8 +160,11 @@ describe('expireParticipant', () => {
     room.setScope('ben+x', { byKind: 'agent', area: 'b', summary: 's', paths: ['b.txt'] })
     const claim = room.addClaim({ path: 'a.txt', from: 1, to: 1, by: 'ben', byKind: 'agent', intent: 'edit' })
     const kept = room.addClaim({ path: 'b.txt', from: 1, to: 1, by: 'ben+x', byKind: 'agent', intent: 'edit' })
-    room.doc.getMap('conflicts').set('ben\0merge\0cy\0a.txt\0', { status: 'conflict' })
-    room.doc.getMap('conflicts').set('cy\0merge\0ben\0a.txt\0', { status: 'conflict' })
+    const conflict = (owner: string, other: string) => ({ owner, other, kind: 'merge', path: 'a.txt', status: 'conflict', settled: 'conflict',
+      openId: owner + other, endpoints: [{ name: owner }, { name: other }], inputs: 'i', factId: 'f', fence: '1', checkedAt: 1 })
+    room.doc.getMap('conflicts').set('ben\0merge\0cy\0a.txt\0', conflict('ben', 'cy'))
+    room.doc.getMap('conflicts').set('cy\0merge\0ben\0a.txt\0', conflict('cy', 'ben'))
+    room.doc.getMap('conflicts').set('cy\0merge\0ben+x\0a.txt\0', conflict('cy', 'ben+x'))
     room.expiry.set('ben', { observedMs: ROOM_STALE_MS, epoch: 'ep' })
     const question = hubAppend<QuestionMsg>(room, { name: 'cy', kind: 'agent' }, { type: 'question', to: 'ben', text: 'still there?' })
 
@@ -180,7 +183,7 @@ describe('expireParticipant', () => {
     expect(room.scope('ben+x')).toBeDefined()
     expect(room.claims.has(claim.id)).toBe(false)
     expect(room.claims.has(kept.id)).toBe(true)
-    expect([...room.doc.getMap('conflicts').keys()]).toEqual(['cy\0merge\0ben\0a.txt\0'])
+    expect([...room.doc.getMap('conflicts').keys()]).toEqual(['cy\0merge\0ben+x\0a.txt\0'])
     expect(room.expiry.has('ben')).toBe(false)
     expect(room.messages()).toContainEqual(question) // owed mail stays: it is the ledger's
     // The hub appends the notices; the transaction itself writes no bus entry.

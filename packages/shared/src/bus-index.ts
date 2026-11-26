@@ -121,6 +121,7 @@ export class BusIndex {
     this.stale = true
     try {
       // Build independently: failure cannot publish a healthy-looking partial index.
+      for (const id of this.state.ids.keys()) this.touched.add(id)
       this.state = this.recompute()
       this.stale = false
     } catch { /* Keep the previous snapshot, and use legacy admission until recovery succeeds. */ }

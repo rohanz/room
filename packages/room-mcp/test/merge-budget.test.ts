@@ -1,8 +1,8 @@
 import { commit, git, put, read, repo, world } from './worker-refresh-fixture.js'
 import { workerByTag } from './registry-fixture.js'
-import { ConflictSet, type ConflictSlot, slotKey } from '../src/conflict-set.js'
+import { ConflictSet, ConflictSlots, type Evaluation, type ConflictSlot, slotKey } from '../src/conflict-set.js'
 import type { Session } from '../src/session.js'
-import { gitBlobHash, manifestKey, type ManifestEntry } from '@room/shared'
+import { gitBlobHash, manifestKey, openConflicts, type ManifestEntry } from '@room/shared'
 import { epochPublication } from '@room/shared/testing'
 import * as Y from 'yjs'
 import fs from 'node:fs'
@@ -103,10 +103,15 @@ describe('merge budget workload', () => {
       const session = { ...t.leadSession(), graph: undefined, me: { name: owner, kind: 'agent' }, dir: dirs.get(owner)!, post,
         awareness: { getStates: () => states }, provider: { synced: true }, lease: { fence: () => '1' } } as unknown as Session
       const set = new ConflictSet(session, owner, session, () => {}, 0)
-      try { await set.reconcile(point) } finally { set.stop() }
+      const publication = vi.spyOn(ConflictSlots.prototype, 'settlePair')
+      let evaluations: Evaluation[] = []
+      try {
+        await set.reconcile(point)
+        evaluations = publication.mock.calls.filter(([by, peer]) => by === owner && peer === other).flatMap(([, , results]) => [...results.values()])
+      } finally { publication.mockRestore(); set.stop() }
       const slot = room.doc.getMap<ConflictSlot>('conflicts').get(slotKey(owner, 'merge', other, file))
-      const notices = post.mock.calls.map(call => call[1]).filter(n => n.type === 'merge-conflict' && n.to === owner && n.text.includes(`with ${other}'s version`)).map(n => n.text)
-      return { owner, other, status: slot?.status, notices }
+      const conflicts = openConflicts(room, owner).filter(entry => entry.kind === 'merge' && entry.other === other)
+      return { owner, other, status: evaluations.find(result => result.path === file && result.kind === 'merge')?.status, stored: slot, conflicts, evaluations }
     }
     const checkpoint = async (point: string, expectedNoise: string[][] = []) => {
       await publish()
@@ -123,11 +128,11 @@ describe('merge budget workload', () => {
           `${kind}: ${point}: comparison must be complete`).not.toBe('unknown')
       }
       console.info(JSON.stringify({ kind, point, rows }))
-      const noisy = rows.filter(row => (row.status && row.status !== 'clean') || row.notices.length)
+      const noisy = rows.filter(row => (row.status && row.status !== 'clean') || row.conflicts.length)
       expect.soft(noisy.map(row => [row.owner, row.other]), `${kind}: ${point}`).toEqual(expectedNoise)
       for (const row of noisy) {
         expect.soft(row.status).toBe('conflict')
-        expect.soft(row.notices.length).toBeGreaterThan(0)
+        expect.soft(row.conflicts.length).toBeGreaterThan(0)
       }
       return rows
     }
@@ -170,7 +175,7 @@ describe('merge budget workload', () => {
       merges.mockClear()
       budget.mockClear()
       phaseStarted = performance.now()
-      await f.evaluate(f.d.name, f.u.name, 'six-worker warm reconciliation')
+      const completed = await f.evaluate(f.d.name, f.u.name, 'six-worker warm reconciliation')
       const warm = report()
       process.stderr.write(JSON.stringify({ point: 'six-worker 200-path Git commands', workers: 6, changedPaths: 200, editedWorkers: 1, ownersReconciled: 1, peers: 6, cold, warm }) + '\n')
       // The Git observer covers repository commands; merge-file runs outside
@@ -184,7 +189,10 @@ describe('merge budget workload', () => {
       // Warm reconciliation still probes blob identity and ancestry; it does
       // not eliminate all Git reads.
       expect(warm.repositoryGitCommands).toBeGreaterThan(0)
-      for (const p of paths) expect(f.room.doc.getMap<ConflictSlot>('conflicts').get(slotKey(f.d.name, 'merge', f.u.name, p))?.status).toBe('clean')
+      for (const p of paths) {
+        expect(completed.evaluations.find(result => result.path === p)).toMatchObject({ status: 'clean' })
+        expect(f.room.doc.getMap('conflicts').has(slotKey(f.d.name, 'merge', f.u.name, p))).toBe(false)
+      }
     } finally { setGitObserver(undefined); merges.mockRestore(); budget.mockRestore() }
   }, 600_000)
 
@@ -198,6 +206,8 @@ describe('merge budget workload', () => {
     try {
       const result = await f.evaluate(f.d.name, f.u.name, mode)
       expect(result.status).toBe(mode === 'real conflict' ? 'conflict' : 'clean')
+      expect(result.stored?.status).toBe(mode === 'real conflict' ? 'conflict' : undefined)
+      expect(result.conflicts).toHaveLength(mode === 'real conflict' ? 1 : 0)
       expect(budget).toHaveBeenCalledTimes(mode === 'real conflict' ? 1 : 0)
       expect(merges).toHaveBeenCalledTimes(mode === 'real conflict' ? 1 : 0)
     } finally { budget.mockRestore(); merges.mockRestore() }

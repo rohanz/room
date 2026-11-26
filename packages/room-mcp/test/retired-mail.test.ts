@@ -4,13 +4,14 @@ import fs from 'node:fs'
 import os from 'node:os'
 import path from 'node:path'
 import * as Y from 'yjs'
-import { admit, deliveryIndex, MAIL_BYTES, memorySnapshot, RoomDoc, type Msg } from '@room/shared'
+import { admit, deliveryIndex, MAIL_BYTES, memorySnapshot, RoomDoc, type ConflictSlot, type Msg } from '@room/shared'
 import { Rooms } from '../src/registry.js'
 import type { Session } from '../src/session.js'
 import { closeRegistryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
+import { Ledger, isConflictItem } from '../src/ledger.js'
 
 const cleanups: (() => Promise<void>)[] = []
 afterEach(async () => { vi.restoreAllMocks(); for (const cleanup of cleanups.splice(0)) await cleanup() })
@@ -19,14 +20,14 @@ function fixture() {
   const git = (...args: string[]) => execFileSync('git', ['-C', dir, ...args], { stdio: 'pipe' })
   git('init', '-qb', 'main'); git('config', 'user.name', 'test'); git('config', 'user.email', 'test@test'); git('commit', '-qm', 'initial', '--allow-empty')
   const room = new RoomDoc()
-  const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir, me: { name: 'lead' }, roomName: 'local/test/main',
+  const s = { ...hubSeam(room), policyStore: testPolicyStore(), room, dir, me: { name: 'lead', kind: 'agent' }, roomName: 'local/test/main',
     roomUrl: 'ws://team/local%2Ftest%2Fmain', daemon: { fence: 'lead-session' }, provider: { on() {}, off() {} } } as unknown as Session
   const rooms = new Rooms({ primary: () => s, setPrimary: () => {}, attach: () => ({ stop() {} }), listCwdProcesses: () => [] })
   rooms.track(s)
   cleanups.push(async () => { rooms.remove(s); room.doc.destroy(); await closeRegistryForDir(dir); fs.rmSync(dir, { recursive: true, force: true }) })
   return { dir, room, s, rooms }
 }
-const message = (id: string, to: string, text = 'hello'): Msg => ({ id, type: 'note', from: 'sender', to, text, at: Date.now(), priority: 'notify' })
+const message = (id: string, to: string, text = 'hello'): Msg => ({ id, type: 'note', from: 'sender', fromKind: 'agent', to, text, at: Date.now(), priority: 'notify' })
 const checkTotals = (room: RoomDoc) => {
   const index = deliveryIndex(room)
   const before = { bytes: index.owedBytes, recipients: structuredClone(index.recipients), ids: [...index.pending.keys()].sort() }
@@ -38,6 +39,29 @@ async function retired(dir: string, tag: string) {
   await registry.beginRetirement(record.id, await registry.archiveOf(record, { summary: 'done' }))
   await registry.finishCleanup(record.id, record.room)
   return { registry, record: (await registry.read(record.id))! }
+}
+
+/** Late saved state must heal by exact endpoint identity, without deleting a live worker's unrelated facts. */
+function lateConflictState(room: RoomDoc, worker: { id: string; name: string }) {
+  const conflicts = room.doc.getMap<ConflictSlot>('conflicts')
+  const slot = (owner: string, other: string, id: string, endpoints: ConflictSlot['endpoints']): ConflictSlot => ({
+    owner, other, kind: 'merge', path: 'x', status: 'conflict', settled: 'conflict',
+    inputs: id, factId: id, openId: id, fence: '1', checkedAt: 1, endpoints,
+  })
+  const retired = { name: worker.name, workerId: worker.id }
+  conflicts.set('retired', slot('lead', worker.name, 'retired-direct', [{ name: 'lead' }, retired]))
+  conflicts.set('unrelated', slot('lead', 'peer', 'live-direct', [{ name: 'lead' }, { name: 'peer' }]))
+  return () => {
+    expect([...conflicts.keys()]).toEqual(['unrelated'])
+  }
+}
+
+function expectLegacyIgnored(s: Session, ordinary: string): void {
+  const ledger = new Ledger({ sessionId: () => 'lead-session', route: () => ({}) })
+  ledger.bind(s)
+  const candidates = ledger.candidates(s)
+  expect(candidates.filter(m => !isConflictItem(m) && ['conflict', 'merge-conflict', 'contract'].includes(m.type))).toEqual([])
+  expect(candidates.some(m => m.id === ordinary)).toBe(true)
 }
 
 it('the hourly pass ends old and late mail using the lead registry, preserving reused tags and other recipients', async () => {
@@ -126,8 +150,8 @@ it('keeps mail when the on-disk worker inventory is incomplete', async () => {
   checkTotals(room)
 })
 
-it('heals retired publications and recorded-subject notices while preserving unbound notices after the retiring session exited', async () => {
-  const { dir, room, rooms } = fixture()
+it('heals retired publications and conflict state while ignoring legacy notices after the retiring session exited', async () => {
+  const { dir, room, rooms, s } = fixture()
   const { record } = await retired(dir, 'gone')
   room.doc.getArray('retiredWorkers').push([record.archive!])
   room.participants.set(`${record.name}\0holder`, { workerId: record.id, epoch: 1, sessionId: 'old', ended: 'released' })
@@ -139,19 +163,23 @@ it('heals retired publications and recorded-subject notices while preserving unb
   room.mail.set(notice.id, notice)
   room.bus.push([{ ...notice, id: 'cf:bus' }, message('ordinary', 'lead', `Discuss ${record.name}`)])
   room.bus.push([{ ...notice, id: 'cf:recorded', noticeSubjects: [{ name: record.name, workerId: record.id }] }])
+  const expectHealed = lateConflictState(room, record)
   await rooms.autoRetire()
   expect(room.manifestHead.has(record.name)).toBe(false)
   expect(room.manifest.size).toBe(0)
   expect(room.overlays.size).toBe(0)
   expect(room.doc.getMap('completedPublications').size).toBe(0)
-  expect(deliveryIndex(room).pending.has('cf:legacy')).toBe(true)
-  expect(deliveryIndex(room).pending.has('cf:bus')).toBe(true)
+  expect(deliveryIndex(room).pending.has('cf:legacy')).toBe(false)
+  expect(deliveryIndex(room).pending.has('cf:bus')).toBe(false)
+  // Obsolete conflict bodies owe nothing; ordinary mail and state healing still retain their own rules.
   expect(deliveryIndex(room).pending.has('cf:recorded')).toBe(false)
   expect(deliveryIndex(room).pending.has('ordinary')).toBe(true)
+  expectHealed()
+  expectLegacyIgnored(s, 'ordinary')
 })
 
 it('heals a registry-proven retired worker dispatched by a departed lead', async () => {
-  const { dir, room, rooms } = fixture()
+  const { dir, room, rooms, s } = fixture()
   const { registry, record } = await retired(dir, 'gone')
   const file = path.join(registry.root, 'workers', `${record.id}.json`)
   const gone = { ...record, name: 'departed+gone', lead: { ...record.lead, participant: 'departed' },
@@ -161,8 +189,12 @@ it('heals a registry-proven retired worker dispatched by a departed lead', async
   room.manifestHead.set(gone.name, { fence: '1' } as any)
   room.mail.set('cf:departed', { ...message('cf:departed', 'lead'), from: 'room', type: 'merge-conflict', path: 'x', text: `x conflicts with ${gone.name}'s version` } as Msg)
   room.mail.set('cf:departed-recorded', { ...room.mail.get('cf:departed')!, id: 'cf:departed-recorded', noticeSubjects: [{ name: gone.name, workerId: gone.id }] })
+  room.mail.set('ordinary-departed', message('ordinary-departed', 'lead', `Discuss ${gone.name}`))
+  const expectHealed = lateConflictState(room, gone)
   await rooms.autoRetire()
   expect(room.manifestHead.has(gone.name)).toBe(false)
-  expect(deliveryIndex(room).pending.has('cf:departed')).toBe(true)
+  expect(deliveryIndex(room).pending.has('cf:departed')).toBe(false)
   expect(deliveryIndex(room).pending.has('cf:departed-recorded')).toBe(false)
+  expectHealed()
+  expectLegacyIgnored(s, 'ordinary-departed')
 })

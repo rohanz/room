@@ -345,17 +345,20 @@ describe('document identity binding', () => {
     server.destroy()
   })
 
-  it('accepts only the enumerated room notice types, not ordinary speech from room', () => {
+  it('accepts Room notes but refuses retired conflict notice writes and ordinary speech', () => {
     const { server, room, conn, dropped } = fixture()
     expect(conn.emit('message', packet(server, doc => doc.getArray('bus').push([
-      { id: 'notice', at: 1, type: 'contract', priority: 'notify', from: 'room', fromKind: 'agent', to: 'octo', path: 'a.ts', symbol: 'f', text: 'changed' },
+      { id: 'notice', at: 1, type: 'note', priority: 'notify', from: 'room', fromKind: 'agent', to: 'octo', text: 'changed' },
     ])))).toBe(true)
     expect(conn.emit('message', packet(server, doc => doc.getArray('bus').push([
       { id: 'speech', at: 2, type: 'question', priority: 'notify', from: 'room', fromKind: 'agent', to: 'octo', text: 'forged' },
     ])))).toBe(false)
+    for (const type of ['conflict', 'merge-conflict', 'contract']) expect(conn.emit('message', packet(server, doc => doc.getArray('bus').push([
+      { id: 'retired-' + type, at: 2, type, priority: 'notify', from: 'room', fromKind: 'agent', to: 'octo', text: 'retired' },
+    ])))).toBe(false)
     expect(room.messages().some(message => message.id === 'notice')).toBe(true)
     expect(room.messages().some(message => message.id === 'speech')).toBe(false)
-    expect(dropped).toHaveLength(1)
+    expect(dropped).toHaveLength(4)
     server.destroy()
   })
 

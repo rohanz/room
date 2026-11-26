@@ -1,6 +1,6 @@
 /** Explicit GitHub PR lookup, note posting, and local ledger export. */
 import type { Msg, Claim, ClaimMsg, ReleaseMsg, AnswerMsg } from '@room/shared'
-import { RoomDoc, acceptedGit, answerMatchesQuestion, archiveSummary, displayName, formatPlans, parseClaimRelease, participantRecord, participantsView } from '@room/shared'
+import { RoomDoc, openConflicts, formatConflictLine, acceptedGit, answerMatchesQuestion, archiveSummary, displayName, formatPlans, parseClaimRelease, participantRecord, participantsView } from '@room/shared'
 import fs from 'node:fs'
 import path from 'node:path'
 import * as Y from 'yjs'
@@ -135,6 +135,11 @@ export async function exportArchiveLedger(s: Session, legacyRoom: string, opts: 
 export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: string; now?: number; history?: boolean }): string {
   const now = opts.now ?? Date.now()
   const archived = archiveSummary(room)
+  const archivedCounts: Record<string, number | undefined> = archived.counts
+  for (const kind of ['merge-conflict', 'conflict', 'contract']) {
+    archived.messages -= archivedCounts[kind] ?? 0
+    delete archivedCounts[kind]
+  }
   const msgs = room.messages().filter(m => !m.copyOf)
   const releases = new Map<string, ReleaseMsg>()
   const answers = new Map<string, AnswerMsg[]>()
@@ -185,9 +190,6 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: s
         lines.push(question.join('\n'))
         break
       }
-      case 'conflict':
-        lines.push(`- ${t(m.at)} conflict on \`${m.path}\`: ${m.text}`)
-        break
       case 'base':
         lines.push(`- ${t(m.at)} ${who(m)} moved the base to \`${m.base.slice(0, 10)}\` (+${m.commits} commit${m.commits === 1 ? '' : 's'}: ${m.summary})`)
         break
@@ -198,6 +200,7 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: s
       default: break
     }
   }
+  const conflicts = openConflicts(room).filter(c => c.owner === c.slots[0]?.owner).map(c => `- ${c.owner} ↔ ${c.other}: ${formatConflictLine(c)}`)
   const stillOpen = Array.from(open.values())
   const header = [
     `### Room ${opts.history ? 'history' : 'ledger'} for \`${opts.branch || opts.roomName}\``,
@@ -205,21 +208,26 @@ export function renderPrNote(room: RoomDoc, opts: { roomName: string; branch?: s
     '',
   ]
   const claims = stillOpen.map(c => `- ${displayName({ name: c.by, kind: c.byKind })}: \`${c.path}:${c.from}-${c.to}\` — ${c.intent}`)
-  const assemble = (messagesOmitted: number, claimsOmitted: number) => {
+  const assemble = (messagesOmitted: number, claimsOmitted: number, conflictsOmitted = 0) => {
     const out = [...header]
     if (messagesOmitted) out.push(`- ${messagesOmitted} earlier messages omitted to keep this PR note within the size limit`)
     out.push(...(lines.length > messagesOmitted ? lines.slice(messagesOmitted) : messagesOmitted ? [] : ['- (nothing recorded on the bus yet)']))
+    if (conflicts.length > conflictsOmitted) out.push('', '**Open conflicts and overlaps:**', ...conflicts.slice(conflictsOmitted))
+    if (conflictsOmitted) out.push(`- ${conflictsOmitted} open conflicts omitted to keep this PR note within the size limit`)
     if (claims.length > claimsOmitted) out.push('', '**Still claimed:**', ...claims.slice(claimsOmitted))
     if (claimsOmitted) out.push(`- ${claimsOmitted} earlier claims omitted to keep this PR note within the size limit`)
     return out.join('\n') + '\n'
   }
   if (opts.history) return assemble(0, 0)
-  const fits = (messagesOmitted: number, claimsOmitted: number) => Buffer.byteLength(JSON.stringify(assemble(messagesOmitted, claimsOmitted))) <= PR_NOTE_MAX_JSON_BYTES
+  const fits = (messagesOmitted: number, claimsOmitted: number, conflictsOmitted = 0) => Buffer.byteLength(JSON.stringify(assemble(messagesOmitted, claimsOmitted, conflictsOmitted))) <= PR_NOTE_MAX_JSON_BYTES
   if (fits(0, 0)) return assemble(0, 0)
   let lo = 0, hi = lines.length
   while (lo < hi) { const mid = Math.floor((lo + hi) / 2); if (fits(mid, 0)) hi = mid; else lo = mid + 1 }
   if (fits(lo, 0)) return assemble(lo, 0)
   let claimLo = 0, claimHi = claims.length
   while (claimLo < claimHi) { const mid = Math.floor((claimLo + claimHi) / 2); if (fits(lines.length, mid)) claimHi = mid; else claimLo = mid + 1 }
-  return assemble(lines.length, claimLo)
+  if (fits(lines.length, claimLo)) return assemble(lines.length, claimLo)
+  let conflictLo = 0, conflictHi = conflicts.length
+  while (conflictLo < conflictHi) { const mid = Math.floor((conflictLo + conflictHi) / 2); if (fits(lines.length, claims.length, mid)) conflictHi = mid; else conflictLo = mid + 1 }
+  return assemble(lines.length, claims.length, conflictLo)
 }

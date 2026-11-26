@@ -295,7 +295,6 @@ function attachNegotiating(docs: Map<string, RelayDoc>, conn: WebSocket, name: s
       // A later publisher hello is idempotent; operations are enabled as soon as ACK succeeds.
       const registered = selectedDoc!.hub.handle(conn, { v: 1, id: frame.id, op: 'hello', proto: selection!.selection.hub, schema: selection!.selection.schema, client: hello!.offer.release ?? 'Room', sessionId: hello!.sessionId }, { local: true })
       if (!registered.ok) { cleanup(); phase = 'done'; conn.close(1013, 'relay hub session unavailable; reconnect Room'); return }
-      selectedDoc!.hub.noticeContract(conn, selection!.selection)
     }
     phase = 'done'
     cleanup()

@@ -440,7 +440,9 @@ export function createWorkerRuntime(deps: Pick<HandlerState, 'ctx' | 'rooms' | '
   const closeWorkersRoom = async (preserveFacts = false): Promise<void> => {
       const ws = rooms.workers()
       if (!ws) return
-      if (!preserveFacts) try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
+      if (!preserveFacts) {
+        try { cleanupMine(ws, 'lead left') } catch { /* best effort */ }
+      }
       await doLeave(ws)
       rooms.remove(ws)
     }

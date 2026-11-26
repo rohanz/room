@@ -1,3 +1,5 @@
+import { openConflicts } from '@room/shared'
+import { recordEvaluations } from './fixtures/conflict-evaluations.js'
 import { realRepo, setupLead } from './workers-fixture.js'
 import { workerByTag } from './registry-fixture.js'
 import { ConflictSet, type ConflictSlot, slotKey } from '../src/conflict-set.js'
@@ -63,12 +65,15 @@ describe('conflicts on real spawn-carried untracked text', () => {
       const session = { ...t.session, me: { name: owner, kind: 'agent' }, dir: owner === worker.name ? worker.dir : repo,
         post, awareness: { getStates: () => states }, provider: { synced: true }, lease: { fence: () => '1' } } as unknown as Session
       const set = new ConflictSet(session, owner, session, () => {}, 0)
-      try { await set.reconcile('real carried untracked regression') } finally { set.stop() }
+      const evaluated = recordEvaluations(set)
+      try { await set.reconcile('real carried untracked regression') } finally { evaluated.stop(); set.stop() }
       const other = nonPublisher === 'peer' ? 'checkout-editor' : owner === worker.name ? 'rohanz' : worker.name
       return {
         merge: room.doc.getMap<ConflictSlot>('conflicts').get(slotKey(owner, 'merge', other, file)),
         overlap: room.doc.getMap<ConflictSlot>('conflicts').get(slotKey(owner, 'edit-in-claim', other, file)),
-        notices: post.mock.calls.map(call => call[1]),
+        conflicts: openConflicts(room, owner),
+        mergeEvaluation: evaluated.results.filter(result => result.owner === owner && result.other === other && result.path === file && result.kind === 'merge').at(-1),
+        overlapEvaluation: evaluated.results.filter(result => result.owner === owner && result.other === other && result.path === file && result.kind === 'edit-in-claim').at(-1),
       }
     }
     return { ...t, repo, worker, original, check }
@@ -82,9 +87,11 @@ describe('conflicts on real spawn-carried untracked text', () => {
       f.a.addClaim({ by: f.worker.name, byKind: 'agent', path: file, from: 252, to: 282, intent: 'extend end of file', claimedHash: gitBlobHash(text) })
       for (const owner of ['rohanz', f.worker.name]) {
         const result = await f.check(owner)
-        expect(result.merge?.status).toBe('clean')
-        if (owner === 'rohanz') expect(result.overlap?.status).toBe('clean')
-        expect(result.notices.filter(n => n.type === 'conflict' || n.type === 'merge-conflict')).toEqual([])
+        expect(result.merge?.status).toBeUndefined()
+        expect(result.mergeEvaluation).toMatchObject({ status: 'clean' })
+        if (owner === 'rohanz') expect(result.overlap?.status).toBeUndefined()
+        if (owner === 'rohanz') expect(result.overlapEvaluation).toMatchObject({ status: 'clean' })
+        expect(result.conflicts.filter(n => n.kind === 'edit-in-claim' || n.kind === 'merge')).toEqual([])
       }
     } finally { await f.leadTools.shutdown() }
   })
@@ -99,8 +106,9 @@ describe('conflicts on real spawn-carried untracked text', () => {
         f.a.addClaim({ by: side === 'peer' ? 'checkout-editor' : f.worker.name, byKind: 'agent',
           path: file, from: 252, to: 282, intent: 'extend end of file', claimedHash: gitBlobHash(text) })
         const result = await f.check(side === 'owner' ? 'checkout-editor' : 'rohanz', side)
-        expect(result.overlap?.status).toBe(leadEdits ? 'conflict' : 'clean')
-        expect(result.notices.some(n => n.type === 'conflict')).toBe(leadEdits)
+        expect(result.overlap?.status).toBe(leadEdits ? 'conflict' : undefined)
+        expect(result.overlapEvaluation).toMatchObject({ status: leadEdits ? 'conflict' : 'clean' })
+        expect(result.conflicts.some(n => n.kind === 'edit-in-claim')).toBe(leadEdits)
       } finally { await f.leadTools.shutdown() }
     })
   }
@@ -117,9 +125,11 @@ describe('conflicts on real spawn-carried untracked text', () => {
             to: edit === 'append' ? 282 : 126, intent: 'worker additions', claimedHash: gitBlobHash(text) })
           for (const owner of ['rohanz', f.worker.name]) {
             const result = await f.check(owner)
-            expect.soft(result.merge?.status).toBe('clean')
-            if (owner === 'rohanz') expect.soft(result.overlap?.status).toBe('clean')
-            expect.soft(result.notices.filter(n => n.type === 'conflict' || n.type === 'merge-conflict')).toEqual([])
+            expect.soft(result.merge?.status).toBeUndefined()
+            expect.soft(result.mergeEvaluation).toMatchObject({ status: 'clean' })
+            if (owner === 'rohanz') expect.soft(result.overlap?.status).toBeUndefined()
+            if (owner === 'rohanz') expect.soft(result.overlapEvaluation).toMatchObject({ status: 'clean' })
+            expect.soft(result.conflicts.filter(n => n.kind === 'edit-in-claim' || n.kind === 'merge')).toEqual([])
           }
         } finally { await f.leadTools.shutdown() }
       })
@@ -138,7 +148,7 @@ describe('conflicts on real spawn-carried untracked text', () => {
           for (const owner of ['rohanz', f.worker.name]) {
             const result = await f.check(owner)
             expect(result.merge?.status).toBe('conflict')
-            expect(result.notices.some(n => n.type === 'merge-conflict' && n.to === owner)).toBe(true)
+            expect(result.conflicts.some(n => n.kind === 'merge' && n.owner === owner)).toBe(true)
             if (owner === 'rohanz') expect(result.overlap?.status).toBe('conflict')
           }
         } finally { await f.leadTools.shutdown() }

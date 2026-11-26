@@ -1,4 +1,4 @@
-import { deriveConflictSpans, type Claim, type ConflictSpan } from '@room/shared'
+import type { RoomDoc } from '@room/shared'
 import type { Msg, ScopeMsg } from '@room/shared'
 
 export interface TimelineItem {
@@ -37,7 +37,7 @@ function comparableBody(message: Msg): string {
 /** Hides addressed upgrade copies and annotates their broadcast original. */
 function foldUpgradeCopies(messages: readonly Msg[]): Folded[] {
   const eligible = new Set<Msg['type']>(['claim', 'changed', 'scope'])
-  const folded = messages.map(message => ({ message, alsoSentTo: [] as string[] }))
+  const folded = messages.filter(message => !['merge-conflict', 'conflict', 'contract'].includes(message.type)).map(message => ({ message, alsoSentTo: [] as string[] }))
   const hidden = new Set<string>()
   for (const copy of folded) {
     const message = copy.message
@@ -110,8 +110,7 @@ export function groupEpisodes(messages: readonly Msg[]): Episode[] {
   return episodes.sort((a, b) => a.at - b.at)
 }
 
-export function collapseConflictTimeline(messages: readonly Msg[], claims: readonly Claim[] = []): (Folded & { conflict?: ConflictSpan })[] {
-  const conflicts = deriveConflictSpans(messages, claims).filter(s => s.events.length)
-  const grouped = new Set(conflicts.flatMap(s => s.events.map(m => m.id)))
-  return [...foldUpgradeCopies(messages).filter(e => !grouped.has(e.message.id)), ...conflicts.map(conflict => ({ message: conflict.events[0], alsoSentTo: [], conflict }))].sort((a, b) => a.message.at - b.message.at)
+/** Chronological speech only; current conflicts have a separate section. */
+export function timelineEntries(room: RoomDoc): Folded[] {
+  return foldUpgradeCopies(room.messages()).sort((a, b) => a.message.at - b.message.at)
 }

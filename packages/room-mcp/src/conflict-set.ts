@@ -1,16 +1,12 @@
 import fs from 'node:fs'
-import { workerNoticeId } from '@room/hub-core'
-import { noticeLifecycle, type NoticeLifecycle } from './notice-lifecycle.js'
 import { createHash, randomUUID } from 'node:crypto'
-import { acceptedGit, defaultPriority, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type Identity, type Msg, type NoteMsg, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type ParticipantView, type PostBody, type RoomDoc, type Version } from '@room/shared'
-import type { Post, PostOpts } from './post.js'
+import { acceptedGit, conflictEndReason, hasConflictIdentity, conflictWorkerId, claimInMyLines, claimsOverlap, containsPath, coversPath, digestPath, gitBlobHash, manifestKey, neighbours, observedContractAnalysis, participantRecord, participantsView, snapshot, snapshotMetadata, snapshotPath, snapshotStillCurrent, versionOf, type Claim, type ConflictEndEvidence, type Identity, type NoteMsg, type ParticipantMetadataSnapshot, type ParticipantSnapshot, type ParticipantView, type RoomDoc, type Version } from '@room/shared'
 import type { Session } from './session.js'
 import { git, gitBlobInfoMany } from '@room/roomd/git'
 import { comparePair } from '@room/roomd'
 import { gitMergeFile } from './merge.js'
 import { diffLines } from 'diff'
 import { carriedPaths, carriesWork, workerBaseline, pairBaseline, MissingBaseBlob, type Baseline, type BaselineRead } from '@room/roomd/baseline'
-import { safeId } from './worker-codecs.js'
 import { parseInWorker } from './parse/client.js'
 import { specForPath } from './parse/index.js'
 import { consumesSymbol } from './graph-index.js'
@@ -18,82 +14,13 @@ import { trustedWorker, workerText } from './tools/context.js'
 import { readBoundedCheckoutText, readBoundedHistoricalText } from './tools/disk-text.js'
 import { openWorkerReader, registryForDir } from './worker-registry.js'
 
-export type ConflictKind = 'merge' | 'edit-in-claim' | 'claims' | 'contract'
-type ConflictStatus = 'conflict' | 'possible' | 'unknown' | 'clean'
-type ProjectedEpisode = { id: string; endpoints: NonNullable<Msg['noticeSubjects']> }
-type SlotState = Pick<Map<string, ConflictSlot>, 'get' | 'entries'> & { set(key: string, slot: ConflictSlot): unknown }
-export interface ConflictSlot {
-  kind: ConflictKind
-  owner: string
-  other: string
-  path: string
-  subject?: string
-  status: ConflictStatus
-  inputs: string
-  factId: string
-  settled: 'conflict' | 'possible' | 'clean' | 'none'
-  clearedFrom?: 'conflict' | 'possible'
-  epoch: number
-  /** Exact endpoints captured when a projected notice episode opens; never re-derived on replay. */
-  projectedEpisode?: ProjectedEpisode
-  /** Stable within one contract/overlap episode, new after the slot is withdrawn. */
-  episode?: string
-  lines?: number[]
-  why?: string
-  /** Present when the owner's overlapping edit was already there when the claim was made. */
-  earlierSha?: string | null
-  /** An edit inside a claim whose two versions merge without conflict as they stand: an overlap, not a CONFLICT. */
-  merges?: 'clean'
-  fence: string
-  checkedAt: number
-  retryAt?: number
-  retrySource?: string
-  /** Consumer paths are published only while their text grants remain valid. */
-  consumers?: string[]
-  /** Shared possible-overlap episode for this owner, holder and path; retained across exact/clean states. */
-  possibleEpisode?: number
-  /** Another slot opened this episode and posted its notice. */
-  possibleJoined?: boolean
-  /**
-   * A file merge conflict's peer episode (1, 2, …), shared by every file in conflict with the same peer at once:
-   * the files of one episode are one notice, updated as files join or clear. Kept after it clears.
-   */
-  peerEpisode?: number
-  /** When this file last joined or left its peer episode's open conflicts. */
-  turnedAt?: number
-}
-export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'merges' | 'retrySource' | 'consumers'>
-
+import type { ConflictKind, ConflictSlot } from '@room/shared'
+export type { ConflictKind, ConflictSlot } from '@room/shared'
+export type Evaluation = Pick<ConflictSlot, 'kind' | 'owner' | 'other' | 'path' | 'subject' | 'status' | 'inputs' | 'factId' | 'lines' | 'why' | 'earlierSha' | 'merges' | 'retrySource' | 'consumers' | 'evaluatedRanges'> & { incomplete?: boolean }
 const hash = (value: string): string => createHash('sha256').update(value).digest('hex')
 export const slotKey = (owner: string, kind: ConflictKind, other: string, path: string, subject = ''): string =>
   [owner, kind, other, path, subject].join('\0')
-export const noticeId = (key: string, epoch: number, episode?: string): string =>
-  `cf:${hash(key)}:${epoch}${episode ? `:${episode}` : ''}`
-/** A file merge slot whose conflicts are told per peer, not per file. */
 const peerMerge = (slot: Pick<ConflictSlot, 'kind' | 'path'>): boolean => slot.kind === 'merge' && slot.path !== '*'
-const openInEpisode = (slot: ConflictSlot): boolean => slot.settled === 'conflict'
-const clearedInEpisode = (slot: ConflictSlot): boolean => slot.settled === 'clean' && slot.clearedFrom === 'conflict'
-/** Files named in a peer notice; room_state lists every file. */
-const PEER_NOTICE_FILES = 8
-/**
- * The id of the per-peer merge notice for one episode state. Every notice for the same owner and peer shares the
- * `cf:<pair>:peer:` prefix, so a later one replaces an earlier one that was not yet delivered (supersededConflictNotices).
- */
-export const peerNoticeId = (owner: string, other: string, episode: number, open: readonly Pick<ConflictSlot, 'path' | 'epoch'>[], cleared: readonly Pick<ConflictSlot, 'path' | 'epoch'>[]): string =>
-  `cf:${hash([owner, other, 'merge'].join('\0'))}:peer:${episode}:${open.length
-    ? hash(JSON.stringify([open.map(s => [s.path, s.epoch]), cleared.map(s => [s.path, s.epoch])]))
-    : 'clean'}`
-const atLines = (lines?: number[]) => lines?.length ? ` at lines ${lines.join(', ')}` : ''
-const bounded = (items: string[], sep: string) => items.slice(0, PEER_NOTICE_FILES).join(sep) +
-  (items.length > PEER_NOTICE_FILES ? `${sep}and ${items.length - PEER_NOTICE_FILES} more` : '')
-const files = (n: number) => `${n} file${n === 1 ? '' : 's'}`
-/** One owner's open file merge conflicts, per file, for room_state. */
-export function openMergeConflicts(room: RoomDoc, owner: string): { other: string; path: string; lines: number[] }[] {
-  return [...room.doc.getMap<ConflictSlot>('conflicts').values()]
-    .filter(s => s.owner === owner && peerMerge(s) && s.settled === 'conflict')
-    .map(s => ({ other: s.other, path: s.path, lines: s.lines ?? [] }))
-    .sort((a, b) => a.other.localeCompare(b.other) || a.path.localeCompare(b.path))
-}
 const ROOM: Identity = { name: 'room', kind: 'agent' }
 const retryMinutes = [1, 2, 4, 8]
 class StaleConflictInputs extends Error {}
@@ -104,355 +31,155 @@ const samePath = (a: string, b: string): boolean => {
 type LandedWorkerState = { id: string; name?: string; lead?: string; dir?: string; reported: string; run: string; seq: number; busy: boolean }
 type TrustedLandedWorker = { id: string; status: string; dir: string; run: string; seq: number }
 
-/** The one writer of each owner's derived slots. The hub deduplicates posts by deterministic ID. */
+type SlotIndex = { owners: Map<string, Map<string, ConflictSlot>>; pairs: Map<string, Map<string, ConflictSlot>> }
+const slotIndexes = new WeakMap<RoomDoc, SlotIndex>()
+const pairKey = (owner: string, other: string) => JSON.stringify([owner, other])
+/** One changed-key index per document, shared by native and projected evaluators. */
+function conflictSlotIndex(room: RoomDoc): SlotIndex {
+  const known = slotIndexes.get(room)
+  if (known) return known
+  const map = room.doc.getMap<ConflictSlot>('conflicts'), indexed = new Map<string, ConflictSlot>()
+  const state: SlotIndex = { owners: new Map(), pairs: new Map() }
+  const update = (key: string, slot?: ConflictSlot) => {
+    const previous = indexed.get(key)
+    if (previous) {
+      for (const [groups, group] of [[state.owners, previous.owner], [state.pairs, pairKey(previous.owner, previous.other)]] as const) {
+        const entries = groups.get(group); entries?.delete(key); if (!entries?.size) groups.delete(group)
+      }
+      indexed.delete(key)
+    }
+    if (!slot) return
+    indexed.set(key, slot)
+    for (const [groups, group] of [[state.owners, slot.owner], [state.pairs, pairKey(slot.owner, slot.other)]] as const) {
+      let entries = groups.get(group)
+      if (!entries) { entries = new Map(); groups.set(group, entries) }
+      entries.set(key, slot)
+    }
+  }
+  for (const [key, slot] of map) update(key, slot)
+  map.observe(event => { for (const key of event.keysChanged) update(key, map.get(key)) })
+  slotIndexes.set(room, state)
+  return state
+}
+
+/** One writer per owner. Stage only the affected pair, sharing its document index. */
 export class ConflictSlots {
   private readonly map
-  private readonly registrations?: NoticeLifecycle
-  /** Local proof of an accepted notify, carried only through continuously open file slots. */
-  private readonly notifiedPeers = new WeakMap<ConflictSlot, { context: string; id: string }>()
-  constructor(
-    private readonly room: RoomDoc,
-    private readonly post: Post,
-    private readonly fence: string | (() => string),
-    private readonly now: () => number = Date.now,
-    private readonly log: (line: string) => void = () => {},
-    private readonly holderPost: Post = post,
-    private readonly valid: () => boolean = () => true,
-    session?: Session,
-    private readonly captureEndpoints?: (names: string[]) => Msg['noticeSubjects'],
-  ) {
+  private readonly index
+  constructor(private readonly room: RoomDoc, private readonly fence: string | (() => string),
+    private readonly now: () => number = Date.now, private readonly valid: () => boolean = () => true,
+    private readonly endpoints: (names: string[]) => ConflictSlot['endpoints'] = names => names.map(name => {
+      const workerId = conflictWorkerId(room, name); return { name, ...(workerId ? { workerId } : {}) }
+    })) {
     this.map = room.doc.getMap<ConflictSlot>('conflicts')
-    this.registrations = session?.room === room ? noticeLifecycle(session) : undefined
+    this.index = conflictSlotIndex(room)
   }
-
-  /** The lifecycle binds managed ids to exact workers; bodies/posting decisions stay baseline. It cannot end a notice. */
-  private postRegistered(body: PostBody<Msg>, id: string, names: string[], post: Post = this.post, episode?: ProjectedEpisode, leadPriority?: 'notify') {
-    if (this.captureEndpoints && post === this.post) {
-      if (!episode) throw new StaleConflictInputs()
-      body = { ...body, noticeSubjects: episode.endpoints.filter(endpoint => endpoint.workerId) }
-      id += `:episode:${episode.id}`
-    }
-    return this.registrations ? this.registrations.register(ROOM, body, id, names, this.valid, post)
-      : post(ROOM, body, { id, auto: true, ...(leadPriority ? { leadPriority } : {}) })
+  private pair(owner: string, other: string): Map<string, ConflictSlot> { return this.index.pairs.get(pairKey(owner, other)) ?? new Map() }
+  get(key: string): ConflictSlot | undefined { const slot = this.map.get(key); return hasConflictIdentity(slot) ? slot : undefined }
+  owned(owner: string): [string, ConflictSlot][] { return [...this.index.owners.get(owner) ?? []] }
+  private remove(key: string, evidence: ConflictEndEvidence): void {
+    const slot = this.map.get(key)
+    if (slot && conflictEndReason(this.room, slot, evidence)) this.map.delete(key)
   }
-
-  get(key: string): ConflictSlot | undefined { return this.map.get(key) }
-  owned(owner: string, state: SlotState = this.map): [string, ConflictSlot][] { return [...state.entries()].filter(([, slot]) => slot.owner === owner) }
-  drop(keys: string | readonly string[]): void {
-    this.room.doc.transact(() => { for (const key of typeof keys === 'string' ? [keys] : keys) this.map.delete(key) })
+  drop(keys: string | readonly string[], evidence: ConflictEndEvidence = {}): void {
+    const context = { policyCache: new Map(), retiredWorkerIds: new Set(this.room.retiredWorkers().flatMap(worker => worker.id ? [worker.id] : [])), ...evidence }
+    this.room.doc.transact(() => { for (const key of typeof keys === 'string' ? [keys] : keys) this.remove(key, context) })
   }
-
-  /** Graph provenance can lag a still-readable manifest. Keep episode identity while evidence is unknown. */
-  markContractsUnknown(owner: string, other: string, why: string, paths?: ReadonlySet<string>): void {
-    const now = this.now()
-    const fence = typeof this.fence === 'function' ? this.fence() : this.fence
+  /** Coalesce duplicate records without ending the opening retained in keepKey. */
+  consolidateClaims(keepKey: string, duplicateKeys: readonly string[]): Set<string> {
+    if (!this.valid()) throw new StaleConflictInputs()
+    const keep = this.get(keepKey), removed = new Set<string>()
+    if (keep?.kind !== 'edit-in-claim') return removed
     this.room.doc.transact(() => {
-      for (const [key, slot] of this.owned(owner)) {
-        if (slot.kind !== 'contract' || slot.other !== other || paths && !paths.has(slot.path)) continue
+      for (const key of duplicateKeys) {
+        const slot = this.get(key)
+        if (key === keepKey || slot?.kind !== keep.kind || slot.owner !== keep.owner || slot.other !== keep.other
+          || slot.path !== keep.path || JSON.stringify(slot.endpoints) !== JSON.stringify(keep.endpoints)) continue
+        this.map.delete(key); removed.add(key)
+      }
+    })
+    return removed
+  }
+  markContractsUnknown(owner: string, other: string, why: string, paths?: ReadonlySet<string>): void {
+    const now = this.now(), fence = typeof this.fence === 'function' ? this.fence() : this.fence
+    this.room.doc.transact(() => {
+      for (const [key, slot] of this.pair(owner, other)) {
+        if (slot.kind !== 'contract' || paths && !paths.has(slot.path)) continue
         if (slot.status === 'unknown' && slot.why === why && slot.fence === fence) continue
         this.map.set(key, { ...slot, status: 'unknown', inputs: hash(`${key}\0${why}`), why,
           fence, checkedAt: now, retryAt: now + retryMinutes[0]! * 60_000 })
       }
     })
   }
-
+  private groupKey(slot: Pick<ConflictSlot, 'kind' | 'path'>, status: ConflictSlot['settled']): string | undefined {
+    return peerMerge(slot) || slot.kind === 'edit-in-claim' && status === 'possible' ? JSON.stringify([slot.kind, status, peerMerge(slot) ? '' : slot.path]) : undefined
+  }
+  private groups(state: Map<string, ConflictSlot>, endpoints: ConflictSlot['endpoints']): Map<string, string> {
+    const groups = new Map<string, string>()
+    for (const slot of state.values()) {
+      const group = this.groupKey(slot, slot.settled)
+      if (group && hasConflictIdentity(slot) && JSON.stringify(slot.endpoints) === JSON.stringify(endpoints)) groups.set(group, slot.openId)
+    }
+    return groups
+  }
   async settle(key: string, result: Evaluation): Promise<ConflictSlot> {
-    const { slot, notify } = this.settleState(key, result)
-    await notify()
+    const grouped = peerMerge(result) || result.kind === 'edit-in-claim' && result.status === 'possible'
+    const prior = this.map.get(key)
+    const state = grouped ? new Map(this.pair(result.owner, result.other)) : new Map(prior ? [[key, prior]] : [])
+    const endpoints = this.endpoints?.([result.owner, result.other])
+    const slot = this.settleState(key, result, state, this.groups(state, endpoints), endpoints)
+    this.room.doc.transact(() => { if (slot.status === 'clean') this.remove(key, { evaluated: 'clean' }); else if (this.map.get(key) !== slot) this.map.set(key, slot) })
     return slot
   }
-
-  /** Only synchronous state changes belong in a pair's publication transaction. */
-  private settleState(key: string, result: Evaluation, endpoints?: Msg['noticeSubjects'], state: SlotState = this.map): { slot: ConflictSlot; notify: () => Promise<void> } {
-    const prev = state.get(key)
-    const now = this.now()
-    const fence = typeof this.fence === 'function' ? this.fence() : this.fence
-    const active = result.status === 'conflict' || result.status === 'possible'
-    let projectedEpisode = prev?.projectedEpisode
-    if (this.captureEndpoints && active) {
-      endpoints ??= this.captureEndpoints([result.owner, result.other])
-      if (!endpoints || endpoints.length !== 2) throw new StaleConflictInputs()
-      const same = (episode: ProjectedEpisode | undefined) => !!episode && JSON.stringify(episode.endpoints) === JSON.stringify(endpoints)
-      if (!same(projectedEpisode) || prev?.settled === 'clean' || prev?.settled === 'none') {
-        // Files joining the same open pair share its immutable binding, including peer-group notices.
-        const shared = this.owned(result.owner, state).find(([k, slot]) => k !== key && slot.other === result.other
-          && (slot.settled === 'conflict' || slot.settled === 'possible') && same(slot.projectedEpisode))?.[1].projectedEpisode
-        projectedEpisode = shared ?? { id: randomUUID(), endpoints }
-      }
-    }
-    const identityChanged = !!this.captureEndpoints && active && prev?.projectedEpisode?.id !== projectedEpisode?.id
-    // Legacy projected slots have no endpoint proof. Unknown cannot migrate them by guessing;
-    // a current positive evaluation opens a fresh, bound episode instead.
-    const legacy = !!this.captureEndpoints && !projectedEpisode
-    if (result.status === 'unknown' && prev?.status === 'unknown' && prev.inputs === result.inputs && prev.fence === fence
-      && (prev.retryAt ?? 0) > now && (!legacy || prev.settled === 'none')) return { slot: prev, notify: async () => {} }
-    if (prev?.inputs === result.inputs && prev.status === result.status && prev.factId === result.factId && prev.fence === fence
-      && result.status !== 'unknown' && !identityChanged) return { slot: prev, notify: async () => {} }
-    const changedFact = active ? prev?.settled !== result.status || prev.factId !== result.factId || identityChanged : false
-    const epoch = (prev?.epoch ?? 0) + (changedFact ? 1 : 0)
-    const settled = result.status === 'unknown' ? legacy ? 'none' : prev?.settled ?? 'none' : result.status
-    const possibleEpisode = result.kind === 'edit-in-claim'
-      ? this.joinPossibleEpisode(key, { ...result, projectedEpisode }, settled, prev) : {}
+  private settleState(key: string, result: Evaluation, state: Map<string, ConflictSlot>, groups: Map<string, string>, captured?: ConflictSlot['endpoints']): ConflictSlot {
+    const stored = state.get(key), prev = hasConflictIdentity(stored) ? stored : undefined, now = this.now(), fence = typeof this.fence === 'function' ? this.fence() : this.fence
+    if (prev?.settled === 'conflict' && result.incomplete)
+      result = { ...result, status: 'unknown', why: 'latest evaluation inputs are unreadable' }
+    const active = result.status === 'conflict' || result.status === 'possible', endpoints = active ? captured : prev?.endpoints ?? captured
+    if (!endpoints || endpoints.length !== 2) throw new StaleConflictInputs()
+    const identityChanged = active && JSON.stringify(endpoints) !== JSON.stringify(prev?.endpoints)
+    if (result.status === 'unknown' && prev?.status === 'unknown' && prev.inputs === result.inputs && prev.fence === fence && (prev.retryAt ?? 0) > now) return prev
+    if (prev?.inputs === result.inputs && prev.status === result.status && prev.factId === result.factId && prev.fence === fence && result.status !== 'unknown' && !identityChanged && prev.openId) return prev
+    const settled = result.status === 'unknown' ? prev?.settled ?? 'none' : result.status
     const unknownCount = result.status === 'unknown' ? Math.min(3, (prev?.status === 'unknown' ? Math.max(0, retryMinutes.findIndex(m => (prev.retryAt ?? 0) - prev.checkedAt <= m * 60_000)) + 1 : 0)) : 0
-    const slot: ConflictSlot = {
-      ...result, ...(result.status === 'unknown' && prev ? { factId: prev.factId } : {}), settled, epoch, fence, checkedAt: now, ...possibleEpisode,
-      ...(projectedEpisode ? { projectedEpisode } : {}),
-      ...((result.kind === 'contract' || result.kind === 'edit-in-claim') && (!prev || prev.episode) ? { episode: prev?.episode ?? randomUUID() } : {}),
-      ...(result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible') ? { clearedFrom: prev.settled } : {}),
-      // A cleared slot re-checked clean (or unreadable) keeps what it cleared: the replay re-derives the same "cleared" id, never a second one.
-      ...((result.status === 'clean' || result.status === 'unknown') && prev?.settled === 'clean' && prev.clearedFrom ? { clearedFrom: prev.clearedFrom } : {}),
-      // What cleared was an overlap that merged, not a CONFLICT; an unreadable pass keeps what was last known.
-      ...((result.status === 'clean' || result.status === 'unknown') && prev?.merges && (prev.settled === 'conflict' || prev.settled === 'clean' && prev.clearedFrom) ? { merges: prev.merges } : {}),
-      ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}),
-    }
-    // A file joins its peer's open episode, or leaves it: the peer's one notice changes, not a notice per file.
-    const peerTurn = peerMerge(result) && (changedFact && settled === 'conflict' || prev?.settled === 'conflict' && settled !== 'conflict')
-    if (peerMerge(result)) {
-      const peerEpisode = this.joinPeerEpisode(key, { ...result, projectedEpisode }, settled, prev, state)
-      if (peerEpisode !== undefined) slot.peerEpisode = peerEpisode
-      const turnedAt = peerTurn ? now : prev?.turnedAt
-      if (turnedAt !== undefined) slot.turnedAt = turnedAt
-      if (settled === 'conflict') {
-        const context = this.peerNoticeContext(slot)
-        // A surviving open file witnesses continuity even when another file joins or changes lines.
-        // Clean/dropped/replaced slots cannot carry this proof into a later opening.
-        const known = [prev, ...this.peerSlots(slot.owner, slot.other, state).map(([, s]) => s)]
-          .filter((s): s is ConflictSlot => s?.settled === 'conflict')
-          .map(s => this.notifiedPeers.get(s)).find(proof => proof?.context === context)
-        if (known) this.notifiedPeers.set(slot, known)
-      }
-    }
-    if (state === this.map) this.room.doc.transact(() => this.map.set(key, slot))
-    else state.set(key, slot)
-    // A slot from before peer episodes clears with its own per-file notice.
-    const toldPerPeer = peerMerge(result) && (settled === 'conflict' || settled === 'clean' && prev?.settled === 'conflict' && slot.peerEpisode !== undefined)
-    return { slot, notify: async () => {
-      if (peerTurn && !this.deferPeerNotices) await this.postPeerNotice(slot.owner, slot.other)
-      if (toldPerPeer) return
-      if (changedFact) await this.postNotice(key, slot)
-      else if (result.status === 'clean' && (prev?.settled === 'conflict' || prev?.settled === 'possible')) await this.postNotice(key, slot)
-    } }
+    const continuing = prev && prev.settled === settled && ['conflict', 'possible'].includes(prev.settled) && !identityChanged
+      && (prev.merges === 'clean') === (result.merges === 'clean')
+    const group = this.groupKey(result, settled)
+    const openId = active ? (continuing ? prev.openId : undefined) ?? (group ? groups.get(group) : undefined) ?? randomUUID() : prev?.openId ?? (result.status === 'unknown' ? randomUUID() : undefined)
+    if (active && group) groups.set(group, openId!)
+    const fact = result.status === 'unknown' && prev ? prev : result
+    const slot: ConflictSlot = { kind: result.kind, owner: result.owner, other: result.other, path: result.path,
+      ...(result.subject !== undefined ? { subject: result.subject } : {}), status: result.status, inputs: result.inputs, factId: fact.factId,
+      lines: fact.lines, why: result.why, earlierSha: fact.earlierSha, merges: fact.merges, consumers: fact.consumers,
+      evaluatedRanges: fact.evaluatedRanges, retrySource: result.retrySource, settled, fence, checkedAt: now,
+      confirmedAt: result.status === 'unknown' ? prev?.confirmedAt : now,
+      ...(openId && result.status !== 'clean' ? { openId } : {}), ...(endpoints ? { endpoints } : {}),
+      ...(result.kind === 'edit-in-claim' ? { claimRanges: result.status === 'unknown' ? prev?.claimRanges
+        : this.room.openClaims().filter(claim => claim.by === result.other && claim.path === result.path
+          && (result.status === 'possible' || !result.subject || claim.id === result.subject)).map(({ from, to }) => ({ from, to })) } : {}),
+      ...(result.status === 'unknown' ? { retryAt: now + retryMinutes[unknownCount]! * 60_000 } : {}) }
+    if (result.status === 'clean' && conflictEndReason(this.room, prev ?? slot, { evaluated: 'clean' })) state.delete(key); else state.set(key, slot)
+    return slot
   }
-
-  /** Prepare without touching replicated state; publish the completed pair in one short transaction. */
   async settlePair(owner: string, other: string, results: ReadonlyMap<string, Evaluation>, refresh?: () => Promise<boolean>): Promise<void> {
     await this.publishPair(owner, other, results, refresh, true)
   }
-
-  /** Unbound legacy slots have no current pair result to retain; keep their existing invalidation rule. */
   async diagnosePair(result: Evaluation, refresh?: () => Promise<boolean>): Promise<void> {
-    const results = new Map([[slotKey(result.owner, 'merge', result.other, '*'), result]])
-    if (this.captureEndpoints) for (const [key, slot] of this.owned(result.owner)) {
-      if (slot.other === result.other && peerMerge(slot) && !slot.projectedEpisode)
-        results.set(key, { ...slot, status: 'unknown', inputs: hash(`${slot.inputs}\0${result.why}`), why: result.why })
-    }
-    await this.publishPair(result.owner, result.other, results, refresh, false)
+    await this.publishPair(result.owner, result.other, new Map([[slotKey(result.owner, 'merge', result.other, '*'), result]]), refresh, false)
   }
-
   private async publishPair(owner: string, other: string, results: ReadonlyMap<string, Evaluation>, refresh: (() => Promise<boolean>) | undefined, complete: boolean): Promise<void> {
-    const active = [...results.values()].some(r => r.status === 'conflict' || r.status === 'possible')
-    const endpoints = this.captureEndpoints && active ? this.captureEndpoints([owner, other]) : undefined
-    if (this.captureEndpoints && active && (!endpoints || endpoints.length !== 2)) throw new StaleConflictInputs()
     if (!this.valid()) throw new StaleConflictInputs()
-    // Use the same ordered state transitions and episode rules as settle(), on a private working map.
-    // Preparation may yield or fail; neither can expose half of the pair to local or remote readers.
-    const state = new Map(this.map.entries())
-    const notices: (() => Promise<void>)[] = []
+    const state = new Map(this.pair(owner, other)), endpoints = this.endpoints?.([owner, other]), groups = this.groups(state, endpoints)
     let prepared = 0
     for (const [key, result] of results) {
-      if (++prepared % 32 === 0) {
-        await new Promise<void>(resolve => setImmediate(resolve))
-        if (!this.valid()) throw new StaleConflictInputs()
-      }
-      notices.push(this.settleState(key, result, endpoints, state).notify)
+      if (++prepared % 32 === 0) { await new Promise<void>(resolve => setImmediate(resolve)); if (!this.valid()) throw new StaleConflictInputs() }
+      this.settleState(key, result, state, groups, endpoints)
     }
     if (refresh && !await refresh() || !this.valid()) throw new StaleConflictInputs()
     this.room.doc.transact(() => {
-      if (complete) this.map.delete(slotKey(owner, 'merge', other, '*'))
-      for (const key of results.keys()) {
-        const slot = state.get(key)!
-        if (this.map.get(key) !== slot) this.map.set(key, slot)
-      }
+      if (complete) this.remove(slotKey(owner, 'merge', other, '*'), { evaluated: 'clean' })
+      for (const key of results.keys()) { const slot = state.get(key); if (!slot) this.remove(key, { evaluated: 'clean' }); else if (this.map.get(key) !== slot) this.map.set(key, slot) }
     })
-    for (const notify of notices) await notify()
-  }
-
-  /**
-   * Inside a ConflictSet pass, file merge slots settle silently and the pass's replay posts one notice per peer.
-   * Outside a pass (direct callers), each settle that changes a peer's open files posts that peer's notice.
-   */
-  deferPeerNotices = false
-
-  /** The file merge slots of this owner and peer that belong to an episode. */
-  private peerSlots(owner: string, other: string, state: SlotState = this.map): [string, ConflictSlot][] {
-    return this.owned(owner, state).filter(([, s]) => peerMerge(s) && s.other === other && s.peerEpisode !== undefined)
-  }
-
-  private peerNoticeContext(slot: ConflictSlot): string {
-    return JSON.stringify([slot.owner, slot.other, slot.peerEpisode, slot.fence, slot.projectedEpisode,
-      [slot.owner, slot.other].map(name => {
-        const holder = participantRecord(this.room, name)?.holder
-        return [holder?.sessionId, holder?.epoch, holder?.workerId]
-      })])
-  }
-
-  /** Join the peer's open episode, or open a new one; any other state keeps the episode it was in. */
-  private joinPeerEpisode(key: string, result: Evaluation & Pick<ConflictSlot, 'projectedEpisode'>, settled: ConflictSlot['settled'], prev: ConflictSlot | undefined, state: SlotState = this.map): number | undefined {
-    if (settled !== 'conflict') return prev?.peerEpisode
-    if (prev?.settled === 'conflict' && prev.peerEpisode !== undefined
-      && (!this.captureEndpoints || prev.projectedEpisode?.id === result.projectedEpisode?.id)) return prev.peerEpisode
-    const pair = this.peerSlots(result.owner, result.other, state).filter(([k]) => k !== key)
-    const open = pair.find(([, s]) => openInEpisode(s)
-      && (!this.captureEndpoints || s.projectedEpisode?.id === result.projectedEpisode?.id))?.[1]
-    if (open) return open.peerEpisode
-    return 1 + Math.max(prev?.peerEpisode ?? 0, ...pair.map(([, s]) => s.peerEpisode ?? 0))
-  }
-
-  /**
-   * The one notice for this owner's latest episode with a peer: the files still in conflict with their lines (up to
-   * PEER_NOTICE_FILES), how many cleared, or that all of them cleared. Derived from replicated slots, so a replay
-   * re-derives the same id. A one-file episode keeps the per-file wording.
-   */
-  async postPeerNotice(owner: string, other: string): Promise<void> {
-    if (!this.valid()) return
-    const pair = this.peerSlots(owner, other).map(([, s]) => s)
-    if (!pair.length) return
-    const episode = Math.max(...pair.map(s => s.peerEpisode!))
-    const binding = pair.find(s => s.peerEpisode === episode)?.projectedEpisode
-    if (this.captureEndpoints && !binding) return
-    const byPath = (a: ConflictSlot, b: ConflictSlot) => a.path.localeCompare(b.path)
-    const open = pair.filter(s => s.peerEpisode === episode && (!this.captureEndpoints || s.projectedEpisode?.id === binding?.id) && openInEpisode(s)).sort(byPath)
-    const cleared = pair.filter(s => s.peerEpisode === episode && (!this.captureEndpoints || s.projectedEpisode?.id === binding?.id) && clearedInEpisode(s)).sort(byPath)
-    if (!open.length && !cleared.length) return
-    const baselineId = peerNoticeId(owner, other, episode, open, cleared)
-    const context = this.peerNoticeContext((open[0] ?? cleared[0])!)
-    // Shared slots alone prove no delivery: an interrupted pass or a refused post may have left them.
-    const alreadyOpen = open.map(s => this.notifiedPeers.get(s)).find(proof => proof?.context === context)
-    // An unchanged replay keeps the accepted waking presentation's id and body; the hub
-    // deduplicates it. Only a changed presentation needs a new, quiet update.
-    const priority = open.length && (!alreadyOpen || alreadyOpen.id === baselineId) ? 'notify' : 'fyi'
-    // One id must have one urgency: a successor/restart can need to wake for exactly the
-    // state an earlier producer posted quietly. Preserve waking and clearance ids on main.
-    const id = baselineId + (open.length && priority === 'fyi' ? ':quiet' : '')
-    const clearedNote = cleared.length ? `; ${files(cleared.length)} cleared: ${bounded(cleared.map(s => s.path), ', ')}` : ''
-    const text = open.length
-      ? open.length === 1 && !cleared.length
-        ? `${open[0]!.path} conflicts with ${other}'s version${atLines(open[0]!.lines)}`
-        : `${files(open.length)} conflict${open.length === 1 ? 's' : ''} with ${other}'s version: ${bounded(open.map(s => `${s.path}${atLines(s.lines)}`), '; ')}${clearedNote}`
-      : cleared.length === 1
-        ? `the conflict with ${other} cleared`
-        : `${files(cleared.length)} no longer conflict with ${other}'s version: ${bounded(cleared.map(s => s.path), ', ')}`
-    const body = { type: 'merge-conflict', path: (open[0] ?? cleared[0])!.path, to: owner, priority, text,
-      ...(open.length ? {} : { clearedFrom: 'conflict' }) } as unknown as PostBody<Msg>
-    try {
-      const posted = await this.postRegistered(body, id, [owner, other], this.post, binding)
-      if (!posted.ok) this.log(`conflict notice ${id}: ${posted.text}`)
-      // A new acceptance can precede replication. A duplicate proves no wake for this
-      // opening: even a stored notify may be receipted or superseded from an earlier one.
-      if (posted.ok && (alreadyOpen || !posted.duplicate && posted.msg.priority === 'notify')) {
-        // postOwner succeeds only after both the worker and its lead's copy are accepted.
-        // Weak keys cannot remember a retired/dropped slot or survive a producer restart.
-        for (const slot of open) this.notifiedPeers.set(slot, alreadyOpen ?? { context, id: baselineId })
-      }
-    } catch (e) { this.log(`conflict notice ${id}: ${String(e)}`) }
-  }
-
-  /** The other edit-in-claim slots of this owner for the same holder and path. */
-  private claimGroup(key: string, slot: Pick<ConflictSlot, 'owner' | 'other' | 'path' | 'projectedEpisode'>): [string, ConflictSlot][] {
-    return this.owned(slot.owner).filter(([k, s]) => k !== key && s.kind === 'edit-in-claim' && s.other === slot.other && s.path === slot.path
-      && (!this.captureEndpoints || s.projectedEpisode?.id === slot.projectedEpisode?.id))
-  }
-
-  /** Approximate evidence cannot distinguish claims: keep one possible notice until the last clears. */
-  private joinPossibleEpisode(key: string, result: Evaluation & Pick<ConflictSlot, 'projectedEpisode'>, settled: ConflictSlot['settled'], prev: ConflictSlot | undefined): Pick<ConflictSlot, 'possibleEpisode' | 'possibleJoined'> {
-    // Retain the counter through exact conflicts, so returning to possible opens a new episode.
-    if (settled !== 'possible') return prev?.possibleEpisode !== undefined ? { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined } : {}
-    if (prev?.settled === 'possible' && prev.possibleEpisode !== undefined
-      && (!this.captureEndpoints || prev.projectedEpisode?.id === result.projectedEpisode?.id)) return { possibleEpisode: prev.possibleEpisode, possibleJoined: prev.possibleJoined }
-    const group = this.claimGroup(key, result)
-    const open = group.find(([, s]) => s.settled === 'possible' && s.possibleEpisode !== undefined)?.[1]
-    if (open) return { possibleEpisode: open.possibleEpisode, possibleJoined: true }
-    return { possibleEpisode: 1 + Math.max(prev?.possibleEpisode ?? 0, ...group.map(([, s]) => s.possibleEpisode ?? 0)), possibleJoined: false }
-  }
-
-  /** A reconnect re-derives owed notices from replicated slots, without an in-memory queue. */
-  async replay(owner: string, validSlot: (slot: ConflictSlot) => boolean = () => true): Promise<void> {
-    const peers = new Set<string>()
-    for (const [key, slot] of this.owned(owner)) {
-      if (!validSlot(slot)) continue
-      if (peerMerge(slot) && slot.peerEpisode !== undefined && (openInEpisode(slot) || clearedInEpisode(slot))) { peers.add(slot.other); continue }
-      if (slot.settled === 'conflict' || slot.settled === 'possible' || (slot.settled === 'clean' && slot.epoch > 0)) await this.postNotice(key, slot, true)
-    }
-    for (const other of [...peers].sort()) await this.postPeerNotice(owner, other)
-  }
-
-  async postNotice(key: string, slot: ConflictSlot, replay = false): Promise<void> {
-    const current = () => this.valid() && this.map.get(key) === slot && (typeof this.fence === 'function' ? this.fence() : this.fence) === slot.fence
-    if (!current() || this.captureEndpoints && !slot.projectedEpisode) return
-    const workerView = this.room.workerViewOf(slot.other)
-    if (slot.kind === 'edit-in-claim' && workerView?.lead === slot.owner && workerView.status !== 'running') return
-    const episode = slot.kind === 'edit-in-claim' && slot.possibleEpisode !== undefined && (slot.settled === 'possible' || slot.clearedFrom === 'possible')
-      ? slot.possibleEpisode : undefined
-    if (episode !== undefined) {
-      const open = this.claimGroup(key, slot).filter(([, s]) => s.settled === 'possible' && s.possibleEpisode === episode)
-      // Only the opener posts immediately; replay uses one surviving open slot, even if the opener cleared.
-      if (slot.settled === 'possible' && (replay ? open.some(([k]) => k < key) : slot.possibleJoined)) return
-      if (slot.settled === 'clean' && open.length) return
-    }
-    const id = episode !== undefined
-      ? `cf:${hash([slot.owner, slot.other, slot.path, 'possible', episode].join('\0'))}:${slot.settled === 'clean' ? 'clean' : 'possible'}`
-      : slot.settled === 'clean' && slot.kind !== 'contract'
-      ? `cf:${hash([slot.owner, slot.other, slot.path, slot.clearedFrom, slot.epoch].join('\0'))}:clean`
-      : noticeId(key, slot.epoch, slot.episode) + (slot.settled === 'clean' ? ':clean' : '')
-    const status = slot.settled
-    const otherLead = workerView?.lead
-    const otherSide = otherLead ? `${otherLead}'s worker ${slot.other}` : slot.other
-    const ownWorker = workerView?.lead === slot.owner
-    // Two leads' local workers: the other side's text is never readable here, so a possible conflict is the only
-    // signal this pair can give, and only the two leads can settle it.
-    const crossTeam = !!this.captureEndpoints && status === 'possible' && slot.kind === 'merge'
-      && !!otherLead && otherLead !== this.room.workerViewOf(slot.owner)?.lead
-      // Another lead's LOCAL worker, shown here by that lead; one that joined the team room itself can be asked directly.
-      && this.room.manifestHead.get(slot.other)?.projectedBy === otherLead
-    const priority = status === 'possible' || status === 'clean' ? 'fyi' : slot.kind === 'edit-in-claim' && !ownWorker ? defaultPriority({ type: 'conflict', merges: slot.merges }) : 'notify'
-    // Name a representative exact claim; approximate mapping cannot distinguish the holder's claims here.
-    const held = this.room.openClaims().filter(c => c.by === slot.other && c.path === slot.path && !c.path.endsWith('/'))
-    const claimed = (claims: Claim[]) => `${slot.other}'s claim${claims.length > 1 ? 's' : ''}${claims.length
-      ? ` at line${claims.length > 1 || claims[0]!.from !== claims[0]!.to ? 's' : ''} ${claims.sort((a, b) => a.from - b.from).map(c => c.from === c.to ? `${c.from}` : `${c.from}-${c.to}`).join(', ')}` : ''}`
-    const ownClaim = () => claimed(held.filter(c => c.id === slot.subject))
-    const text = status === 'possible'
-      ? slot.kind === 'edit-in-claim' ? `you may have edited ${slot.path} inside ${claimed(held)}; line mapping is approximate`
-        : slot.kind === 'claims' ? `claims in ${slot.path} may overlap with ${slot.other}; line mapping is approximate`
-          : `possible conflict in ${slot.path} with ${otherSide}: ${slot.why ?? slot.other}'s file contents are not shared or available; Room cannot check whether these edits merge cleanly. ${crossTeam ? `This is for the two leads to settle: ask ${otherLead} in the team room` : `Ask ${otherLead ?? slot.other}`}, or have one side collect and preview`
-      : status === 'clean' ? `the ${slot.clearedFrom === 'possible' ? 'possible conflict' : slot.merges ? 'overlap' : 'conflict'} with ${slot.other} cleared`
-      : slot.kind === 'edit-in-claim' ? slot.earlierSha !== undefined
-        ? `your earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps ${ownClaim().replace(/'s claim/, "'s new claim")}`
-        : `you edited ${slot.path} inside ${ownClaim()}${slot.why ? ` (${slot.why})` : ''}`
-      : slot.kind === 'claims' ? `concurrent overlapping claims in ${slot.path} with ${slot.other}`
-      : slot.kind === 'contract' ? `${slot.other} changed ${slot.subject ?? 'a symbol'} in ${slot.path}${slot.why ? ` (${slot.why})` : ''}`
-      : `${slot.path} conflicts with ${slot.other}'s version${slot.lines?.length ? ` at lines ${slot.lines.join(', ')}` : ''}`
-    const clearedFrom = status === 'clean' ? slot.clearedFrom : undefined
-    const merges = slot.kind === 'edit-in-claim' && slot.merges === 'clean' && (status === 'conflict' || clearedFrom === 'conflict') ? { merges: 'clean' as const } : undefined
-    const mergeNote = merges && status === 'conflict' ? '; merges cleanly' : ''
-    const body = (slot.kind === 'merge'
-      ? { type: 'merge-conflict', path: slot.path, to: slot.owner, priority, text, ...(clearedFrom ? { clearedFrom } : {}) }
-      : slot.kind === 'contract'
-        ? { type: 'contract', path: slot.path, symbol: slot.subject ?? '', to: slot.owner, priority, text }
-        : { type: 'conflict', claimId: slot.subject?.split('\0')[0] ?? '', otherClaimId: slot.subject?.split('\0')[1] ?? '', path: slot.path, to: slot.owner, priority, text: text + mergeNote, ...(clearedFrom ? { clearedFrom } : {}), ...merges }) as unknown as PostBody<Msg>
-    try {
-      const posted = await this.postRegistered(body, id, [slot.owner, slot.other], this.post, slot.projectedEpisode, crossTeam ? 'notify' : undefined)
-      if (!posted.ok) this.log(`conflict notice ${id}: ${posted.text}`)
-    } catch (e) { this.log(`conflict notice ${id}: ${String(e)}`) }
-    if (slot.kind === 'edit-in-claim' && status === 'conflict') {
-      if (!current()) return
-      try {
-        const holderText = slot.earlierSha !== undefined
-          ? `${slot.owner}'s earlier change to ${slot.path}${slot.earlierSha ? ` (${slot.earlierSha})` : ''} overlaps your new claim`
-          : `${slot.owner} edited ${slot.path} inside your claim${slot.why ? ` (${slot.why})` : ''}`
-        const holder = await this.postRegistered({ ...body, to: slot.other, priority: 'notify', text: holderText + mergeNote } as PostBody<Msg>, `${noticeId(key, slot.epoch, slot.episode)}:holder`, [slot.owner, slot.other], this.holderPost)
-        if (!holder.ok) this.log(`conflict holder notice ${id}: ${holder.text}`)
-      } catch (e) { this.log(`conflict holder notice ${id}: ${String(e)}`) }
-    }
   }
 }
 
@@ -559,10 +286,10 @@ export class ConflictSet {
   private scheduledInputs = ''
   private starts: number[] = []
   private readonly contractCache = new ContractAnalysisCache()
+  private readonly seenPublications = new Set<string>()
   private guard: (() => boolean) | undefined
   private carriedValues = new Map<string, Carried | undefined>()
   private freshStorage?: () => Promise<boolean>
-  private projectedWorkerId?: string
   constructor(private readonly team: Session, private readonly owner = team.me.name, private readonly notices: Session = team,
     private readonly log: (line: string) => void = line => process.stderr.write(`room-mcp: ${line}\n`), private readonly debounceMs = 2000,
     private readonly carriedFrom?: CarriedLookup,
@@ -580,50 +307,12 @@ export class ConflictSet {
     },
     private readonly claimText: typeof workerText = workerText) {
     const fence = () => team.lease?.fence() ?? ''
-    const ownerPost: Post = (from, body, opts) => Object.assign(this.postOwner(from, body, opts), {
-      id: team.room !== notices.room && body.noticeSubjects?.length ? this.projectedNoticeId(opts?.id, this.owner, body.noticeSubjects) : opts?.id ?? '',
+    this.slots = new ConflictSlots(team.room, fence, Date.now, () => this.guard?.() ?? false, names => {
+      return names.map(name => {
+        const workerId = conflictWorkerId(team.room, name)
+        return { name, ...(workerId ? { workerId } : {}) }
+      })
     })
-    this.slots = new ConflictSlots(team.room, ownerPost, fence, Date.now, log, team.post, () => this.guard?.() ?? false,
-      team.room === notices.room && owner === team.me.name ? team : undefined,
-      team.room !== notices.room ? names => {
-        const views = participantsView(team.room, team.awareness, Date.now())
-        const endpoints = names.map(name => {
-          const snap = snapshotMetadata(team.room, name, views)
-          if (!snap?.fenceValid || !snap.head.complete) return undefined
-          const workerId = name === owner ? this.projectedWorkerId : snap.head.projectedFrom ?? snap.record?.holder?.workerId
-          if (name === owner && (!workerId || workerId !== snap.head.projectedFrom)) return undefined
-          return { name, ...(workerId ? { workerId } : {}) }
-        })
-        return endpoints.every(endpoint => endpoint !== undefined) ? endpoints : undefined
-      } : undefined)
-  }
-
-  private projectedNoticeId(baseline: string | undefined, to: string, subjects: Msg['noticeSubjects']): string {
-    return workerNoticeId(`${baseline}:to:${hash(to)}`, subjects?.flatMap(s => s.workerId ? [s.workerId] : []) ?? [])!
-  }
-
-  /** Projected notices stay private, with one deterministic copy for each person who can act. */
-  private async postOwner<T extends Msg>(from: Identity, body: PostBody<T>, opts?: PostOpts) {
-    const projected = this.notices.room !== this.team.room && this.owner !== this.team.me.name
-    if (!projected) return this.notices.post(from, body, opts)
-    const id = this.projectedWorkerId
-    if (this.freshStorage && !await this.freshStorage()) throw new StaleConflictInputs()
-    if (!id || !this.guard?.() || this.team.room.manifestHead.get(this.owner)?.projectedFrom !== id)
-      throw new StaleConflictInputs()
-    const noticeSubjects = body.noticeSubjects
-    if (!noticeSubjects?.some(subject => subject.name === this.owner && subject.workerId === id)) throw new StaleConflictInputs()
-    const { leadPriority, ...rest } = opts ?? {}
-    const worker = await this.notices.post(from, { ...body, noticeSubjects },
-      { ...rest, id: this.projectedNoticeId(opts?.id, this.owner, noticeSubjects) })
-    if (this.freshStorage && !await this.freshStorage()) throw new StaleConflictInputs()
-    if (!this.guard?.()) throw new StaleConflictInputs()
-    // The worker cannot reach another team; its lead can, so the lead's copy of a cross-team possible conflict wakes it.
-    const lead = await this.notices.post(from, { ...body, to: this.notices.me.name, ...(leadPriority ? { priority: leadPriority } : {}),
-      ...('text' in body ? { text: `${this.owner}: ${body.text}` } : {}), noticeSubjects },
-      { ...rest, id: this.projectedNoticeId(opts?.id, this.notices.me.name, noticeSubjects) })
-    if (!worker.ok) return worker
-    if (!lead.ok) return lead
-    return lead.duplicate ? { ...worker, duplicate: true } : worker
   }
 
   start(): void {
@@ -631,7 +320,7 @@ export class ConflictSet {
     this.scheduledInputs = this.inputsKey()
     const schedule = () => {
       // Revocation stays synchronous; expensive scheduling is once per event-loop turn.
-      this.withdrawUnauthorizedContracts()
+      this.withdrawEndedConflicts()
       if (this.inputCheck || this.stopped) return
       this.inputCheck = setImmediate(() => {
         this.inputCheck = undefined
@@ -702,23 +391,6 @@ export class ConflictSet {
       tokens.set(tag, await reader.sourceToken(tag))
       if (!this.carriedFrom) records.set(tag, await reader.reserved(tag))
     }
-    // Registry authority is needed only for this lead's private notice recipients, never family exclusion.
-    this.projectedWorkerId = undefined
-    let noticeTag: string | undefined
-    if (this.notices.room !== this.team.room) {
-      const id = this.team.room.manifestHead.get(this.owner)?.projectedFrom
-      const candidate = [...records.values()].find(record => record && record.id === id && record.name === this.owner)
-        ?? (id && safeId(id) ? await reader.read(id) : undefined)
-      if (candidate) {
-        noticeTag = candidate.tag
-        if (!tokens.has(noticeTag)) tokens.set(noticeTag, await reader.sourceToken(noticeTag))
-        const record = records.get(noticeTag) ?? await reader.reserved(noticeTag)
-        if (record && record.id === id && record.name === this.owner && record.mode === 'local'
-          && record.lead.participant === this.notices.me.name && record.room === this.notices.roomName
-          && record.lead.room === record.room && record.projectedInto === this.team.roomName
-          && !['retiring', 'retired', 'abandoned'].includes(record.phase)) this.projectedWorkerId = record.id
-      }
-    }
     const memo = new Map<string, Carried | undefined>()
     this.carriedValues = memo
     let valid = true
@@ -737,8 +409,6 @@ export class ConflictSet {
         const tag = tagOf(participant)
         if (tag && (!tokens.has(tag) || await reader.sourceToken(tag) !== tokens.get(tag))) { valid = false; break }
       }
-      if (noticeTag && ![...memo.keys()].some(name => tagOf(name) === noticeTag)
-        && await reader.sourceToken(noticeTag) !== tokens.get(noticeTag)) valid = false
       return valid
     } })
   }
@@ -791,27 +461,27 @@ export class ConflictSet {
       [...room.workerViews.values()].filter(w => w.lead === this.owner).map(w => [w.id, w.status, w.run])])
   }
 
-  /** Remove every contract whose provider or consumer has left its text grant. */
-  private withdrawUnauthorizedContracts(): void {
+  /** Every destructive decision uses the shared positive-evidence rule. */
+  private withdrawEndedConflicts(): void {
     if (!this.team.lease?.fence()) return
-    const room = this.team.room
-    const owned = this.slots.owned(this.owner).filter(([, slot]) => slot.kind === 'contract')
-    if (!owned.length) return
+    const room = this.team.room, owned = this.slots.owned(this.owner)
     const views = participantsView(room, this.team.awareness, Date.now())
-    const mine = snapshotMetadata(room, this.owner, views)
+    const withdrawnParticipants = new Set<string>()
+    const present = new Set(views.map(view => view.name))
+    for (const name of this.seenPublications) if (!present.has(name)) {
+      withdrawnParticipants.add(name); this.seenPublications.delete(name)
+    }
+    for (const view of views) if (snapshotMetadata(room, view.name, views)?.fenceValid) this.seenPublications.add(view.name)
+    this.slots.drop(owned.map(([key]) => key), { withdrawnParticipants })
+    const contracts = owned.filter(([key, slot]) => slot.kind === 'contract' && this.slots.get(key))
+    if (!contracts.length) return
     const stale = new Set<string>()
     const peers = new Map<string, ReturnType<typeof snapshotMetadata>>()
-    for (const [key, slot] of owned) {
+    for (const [, slot] of contracts) {
       if (!peers.has(slot.other)) peers.set(slot.other, snapshotMetadata(room, slot.other, views))
-      const theirs = peers.get(slot.other)
-      if (!this.contractPathAuthorized(theirs, slot.path) || !slot.consumers?.length ||
-          slot.consumers.some(path => !this.contractPathAuthorized(mine, path))) this.slots.drop(key)
-      else {
-        const graph = room.graphs.get(slot.other)
-        if (!theirs?.head.complete || theirs.head.coverage.kind !== 'all' ||
-            !graph || graph.status !== 'ready' || graph.sourceFence !== theirs.head.fence ||
-            graph.sourceRev !== theirs.head.rev) stale.add(slot.other)
-      }
+      const theirs = peers.get(slot.other), graph = room.graphs.get(slot.other)
+      if (!theirs?.fenceValid || !theirs.head.complete || theirs.head.coverage.kind !== 'all' || !graph ||
+          graph.status !== 'ready' || graph.sourceFence !== theirs.head.fence || graph.sourceRev !== theirs.head.rev) stale.add(slot.other)
     }
     for (const other of stale) this.slots.markContractsUnknown(this.owner, other, 'provider graph or manifest coverage is updating')
   }
@@ -826,7 +496,7 @@ export class ConflictSet {
       !head.excluded.includes(digestPath(room.roomSalt, path))
   }
   private unknownContracts(other: string, why: string): void {
-    this.withdrawUnauthorizedContracts()
+    this.withdrawEndedConflicts()
     this.slots.markContractsUnknown(this.owner, other, why)
   }
   stop(): void {
@@ -861,11 +531,9 @@ export class ConflictSet {
       // never a recursive chain that keeps flush/tools alive indefinitely.
       for (let attempt = 0; attempt < 2 && !this.stopped; attempt++) {
         this.rerun = false
-        // A pass tells each peer's file conflicts once, from its replay: one notice per peer, not per file.
-        this.slots.deferPeerNotices = true
         try { await this.run(reason) }
         catch (e) { if (!(e instanceof StaleConflictInputs)) throw e; this.rerun = true }
-        finally { this.freshStorage = undefined; this.guard = undefined; this.slots.deferPeerNotices = false }
+        finally { this.freshStorage = undefined; this.guard = undefined }
         if (!this.rerun) return
         if (attempt === 0) await new Promise<void>(resolve => setImmediate(resolve))
       }
@@ -881,10 +549,10 @@ export class ConflictSet {
     return this.slots.settle(key, result)
   }
 
-  private async drop(key: string | readonly string[]): Promise<void> {
+  private async drop(key: string | readonly string[], evidence: ConflictEndEvidence = {}): Promise<void> {
     if (this.freshStorage && !await this.freshStorage()) throw new StaleConflictInputs()
     if (this.guard && !this.guard()) throw new StaleConflictInputs()
-    this.slots.drop(key)
+    this.slots.drop(key, evidence)
   }
 
   private async read(snap: ParticipantSnapshot, path: string): Promise<Version> {
@@ -953,8 +621,11 @@ export class ConflictSet {
     const room = this.team.room
     const leaseFence = this.team.lease?.fence()
     if (!leaseFence) return
+    // Old data cannot seed settled evidence or input/backoff caches, even before inputs arrive.
+    const obsolete = this.slots.owned(this.owner).filter(([, slot]) => !hasConflictIdentity(slot)).map(([key]) => key)
+    if (obsolete.length) this.slots.drop(obsolete)
     await this.releaseLandedWorkerClaims(leaseFence)
-    this.withdrawUnauthorizedContracts()
+    this.withdrawEndedConflicts()
     const views = participantsView(room, this.team.awareness, Date.now())
     const mine = snapshot(room, this.owner, views)
     if (!mine || mine.head.fence !== leaseFence) return
@@ -971,13 +642,8 @@ export class ConflictSet {
     const names = new Set(nb.names())
     if (!await carriedOf.refresh()) throw new StaleConflictInputs()
     const family = (other: string) => sameFamily(mine, snapshotMetadata(room, other, views), views)
-    const removed = new Map<string, string[]>()
-    for (const [key, slot] of this.slots.owned(this.owner)) {
-      if (nb.has(slot.other) && !family(slot.other)) continue
-      const keys = removed.get(slot.other) ?? []
-      keys.push(key); removed.set(slot.other, keys)
-    }
-    for (const keys of removed.values()) await this.drop(keys)
+    // Not being a neighbour is unknown during recovery, never a clearance.
+    await this.drop(this.slots.owned(this.owner).map(([key]) => key))
     names.delete(this.owner)
     for (const other of names) if (family(other)) names.delete(other)
     const capturedPairs = new Map([...names].map(name => [name, this.pairInputs(name, views, carriedOf)]))
@@ -993,18 +659,12 @@ export class ConflictSet {
         if (this.freshStorage && !await this.freshStorage() || !this.guard?.()) throw new StaleConflictInputs()
         await this.slots.diagnosePair(result, carriedOf.refresh)
       }
-      let replayable = true
-      let filesReplayed = false
       try {
         const theirs = snapshot(room, other, views)
         const theirGit = acceptedGit(theirs?.record ?? participantRecord(room, other), views)
         this.guard = () => !this.stopped && authority() && carriedOf.current() && this.pairInputs(other,
           participantsView(room, this.team.awareness, Date.now()), carriedOf) === pairInputs
         const existing = this.slots.owned(this.owner).filter(([, s]) => s.other === other)
-        if (!theirs && !participantRecord(room, other)) {
-          await this.drop(existing.map(([key]) => key))
-          continue
-        }
         if (ownNonPublisher) {
           const pair = !theirs || theirGit === 'updating' ? undefined : await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit)
           if (pair && !('cannotCompare' in pair)) {
@@ -1012,7 +672,7 @@ export class ConflictSet {
             await this.claims(ownPublisher!, theirs!, other, pair.mergeBase,
               new Set([...ownPublisher!.entries.keys(), ...committed.split('\0').filter(Boolean)]),
               await baselineFor(ownPublisher!.name, theirs!.name, pair.mergeBase))
-          } else replayable = false // no completed evaluation; the periodic pass retries
+          }
           continue // only the checkout publisher owns the merge pair
         }
         if (theirs?.head.coverage.kind === 'none' && theirs.head.coverage.reason === 'not-publisher' && theirs.head.publisher) {
@@ -1026,8 +686,8 @@ export class ConflictSet {
               const committed = await git(this.team.dir, ['diff', '--no-renames', '--name-only', '-z', `${pair.mergeBase}..${ownGit.base}`])
               await this.claims(mine, published, other, pair.mergeBase, new Set([...mine.entries.keys(), ...committed.split('\0').filter(Boolean)]),
                 await baselineFor(mine.name, published.name, pair.mergeBase))
-            } else replayable = false
-          } else replayable = false
+            }
+          }
           continue // a non-publisher contributes claims, never a merge pair
         }
         if (!theirs || theirGit === 'updating') {
@@ -1038,7 +698,7 @@ export class ConflictSet {
           continue
         }
         const retrySource = pairInputs
-        if (existing.some(([, slot]) => slot.kind === 'merge' && slot.path === '*' && slot.status === 'unknown' && slot.retrySource === retrySource && (slot.retryAt ?? 0) > Date.now())) continue
+        if (existing.some(([, slot]) => hasConflictIdentity(slot) && slot.kind === 'merge' && slot.path === '*' && slot.status === 'unknown' && slot.retrySource === retrySource && (slot.retryAt ?? 0) > Date.now())) continue
         const pair = await comparePair(this.team.dir, ownGit.remote ?? theirGit.remote, ownGit, theirGit)
         if ('cannotCompare' in pair || !mine.head.complete || !theirs.head.complete || mine.head.coverage.kind !== 'all' || theirs.head.coverage.kind !== 'all' || !mine.fenceValid || !theirs.fenceValid || !mine.roomSalt || !theirs.roomSalt) {
           const why = 'cannotCompare' in pair ? pair.cannotCompare : 'manifest is incomplete or fenced out'
@@ -1177,13 +837,15 @@ export class ConflictSet {
               } else if (!gap) {
                 const unreadableBy = [at === undefined ? this.owner : '', bt === undefined ? other : ''].filter(Boolean).join(' and ')
                 return { owner: this.owner, other, kind: 'merge', path, status: 'possible', inputs,
+                  incomplete: ![a, b].some(value => value.kind === 'held' && value.entry.held === 'scope')
+                    && [a, b].some(value => value.kind === 'unknown' || value.kind === 'held'),
                   factId: hash(['possible', path, mergeBase, aEntry?.change ?? 'committed', bEntry?.change ?? 'committed'].join('\0')), why: unreadableBy }
               } else {
                 return { owner: this.owner, other, kind: 'merge', path, status: 'unknown', inputs, factId: '', why: `cannot read ${at === undefined ? this.owner : other}'s version` }
               }
             }
             // Identical peer copies are a clean merge, including additions. Keep them silent like any
-            // other clean pair; epoch zero also prevents a later removal from emitting "cleared".
+            // other clean pair; closed results are not retained.
             if (at === bt) {
               return { owner: this.owner, other, kind: 'merge', path, status: 'clean', inputs, factId: '' }
             }
@@ -1225,30 +887,9 @@ export class ConflictSet {
           await evaluate(key, result)
         }
         await this.slots.settlePair(this.owner, other, results, carriedOf.refresh)
-        // Completed file results and their notices do not depend on the later claims phase.
-        await this.slots.replay(this.owner, slot => {
-          if (slot.other !== other || !peerMerge(slot)) return false
-          if (!this.guard?.()) { this.rerun = true; return false }
-          return true
-        })
-        filesReplayed = true
         await this.claims(mine, theirs, other, mergeBase, ownMergePaths, baseline, ancestors)
-      } catch (error) {
-        replayable = false
-        throw error
       } finally {
-        if (replayable) {
-          // Replay immediately under this evaluation's complete guard. Never keep
-          // snapshots or reuse completed merge evidence across reconciliations.
-          if (!await carriedOf.refresh()) throw new StaleConflictInputs()
-          await this.slots.replay(this.owner, slot => {
-            if (slot.other !== other || filesReplayed && peerMerge(slot)) return false
-            if (!this.guard?.()) { this.rerun = true; return false }
-            return true
-          })
-          // A peer's one notice is the replay's last post: inputs it moved are checked again.
-          if (!this.guard?.()) this.rerun = true
-        }
+        if (!await carriedOf.refresh() || !this.guard?.()) this.rerun = true
       }
     }
     this.log(`conflicts ${this.owner}: reconciled ${reason}`)
@@ -1306,7 +947,7 @@ export class ConflictSet {
   }
 
   private async contracts(other: string, myPaths: Set<string>, mine: ParticipantSnapshot, theirs: ParticipantSnapshot, carriedOf: CarriedLookup): Promise<void> {
-    this.withdrawUnauthorizedContracts()
+    this.withdrawEndedConflicts()
     const graph = this.team.room.graphs.get(other)
     const carried = carriedOf(this.owner)
     const carriedProvider = carried?.lead === other && carriesWork(carried.baseline)
@@ -1410,6 +1051,7 @@ export class ConflictSet {
       if (slot.kind !== 'contract' || slot.other !== other || live.has(key)) continue
       if (!this.contractPathAuthorized(theirs, slot.path) || !slot.consumers?.every(path => this.contractPathAuthorized(mine, path))) {
         await this.drop(key)
+        if (this.slots.get(key)) await this.settle(key, { ...slot, status: 'unknown', inputs: hash(`unknown-grant\0${key}`), why: 'provider or consumer grant is unknown' })
         continue
       }
       if (!await this.priorConsumersReadable(key, mine)) {
@@ -1433,10 +1075,10 @@ export class ConflictSet {
     const priorClaims = this.slots.owned(this.owner).filter(([, slot]) => slot.other === other
       && (slot.kind === 'edit-in-claim' || slot.kind === 'claims'))
     // Finished-worker authority only matters when there is claim state to suppress or retire.
-    const ownFinishedWorker = this.owner === this.team.me.name && (peerClaims.length > 0 || priorClaims.length > 0)
-      && (await this.localWorker(other))?.status === 'done'
+    const ownWorker = this.owner === this.team.me.name && (peerClaims.length > 0 || priorClaims.length > 0) ? await this.localWorker(other) : undefined
+    const ownFinishedWorker = ownWorker?.status === 'done'
     const theirClaims = ownFinishedWorker ? [] : peerClaims
-    if (ownFinishedWorker) for (const [key] of priorClaims) await this.drop(key)
+    if (ownFinishedWorker) for (const [key] of priorClaims) await this.drop(key, { ownWorker: { name: other, id: ownWorker.id, lead: this.owner, status: 'done' } })
     const seen = new Set<string>()
     const paths = new Set([
       ...theirClaims.flatMap(c => c.path.endsWith('/') ? [...changed].filter(path => claimsOverlap(c, { path, from: 1, to: Number.MAX_SAFE_INTEGER })) : [c.path]),
@@ -1447,13 +1089,16 @@ export class ConflictSet {
       await this.fileTurn()
       if (path.endsWith('/')) continue
       // One semantic overlap per peer and path. Claim renewal/replacement changes the inputs,
-      // not the notice identity. Keep a legacy slot's key/epoch when consolidating old claim slots.
+      // not the opening identity. Keep a legacy slot's key when consolidating old claim slots.
       const prior = this.slots.owned(this.owner).filter(([, s]) => s.kind === 'edit-in-claim' && s.other === other && s.path === path)
         .sort(([ak, a], [bk, b]) => Number(b.settled === 'conflict') - Number(a.settled === 'conflict') ||
           Number(b.settled === 'possible') - Number(a.settled === 'possible') || ak.localeCompare(bk))
       const key = prior[0]?.[0] ?? slotKey(this.owner, 'edit-in-claim', other, path)
       seen.add(key)
-      for (const [oldKey] of prior.slice(1)) await this.drop(oldKey)
+      if (prior.length > 1) {
+        if (this.freshStorage && !await this.freshStorage() || this.guard && !this.guard()) throw new StaleConflictInputs()
+        for (const removed of this.slots.consolidateClaims(key, prior.slice(1).map(([key]) => key))) seen.add(removed)
+      }
       const claims = theirClaims.filter(c => claimsOverlap(c, { path, from: 1, to: Number.MAX_SAFE_INTEGER }))
         .sort((a, b) => a.id.localeCompare(b.id))
       const inputs = hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, mergeBase,
@@ -1477,6 +1122,11 @@ export class ConflictSet {
         } else ancestor = await readBoundedHistoricalText(this.team.dir, mergeBase, path) ?? ''
       } catch { /* unavailable */ }
       if (ownText === undefined || ancestor === undefined) {
+        for (const [priorKey, priorSlot] of prior.slice(1)) {
+          if (!this.slots.get(priorKey)) continue
+          seen.add(priorKey)
+          await this.settle(priorKey, { ...priorSlot, status: 'unknown', inputs, why: 'cannot map claim' })
+        }
         await this.settle(key, { ...base, subject: claims[0]!.id, status: 'unknown', factId: '', why: 'cannot map claim' })
         continue
       }
@@ -1523,6 +1173,8 @@ export class ConflictSet {
         }
       }
       await this.settle(key, { ...base, subject: claim.id, status: exact.length ? 'conflict' : 'possible',
+        incomplete: theirText === undefined && !(theirs.head.level === 'declared'
+          && !(theirs.head.textPrefixes ?? []).some(prefix => containsPath(prefix, path))),
         // Claim IDs, timestamps and range padding are inputs, not new overlap facts. Actual
         // conflicting regions matter even when the merge verdict stays "conflict"; another
         // rewrite of the peer's text inside the same region does not change that verdict.
@@ -1546,8 +1198,11 @@ export class ConflictSet {
       const hit = claimsOverlap(a, { path: b.path, ...mapped })
       await this.settle(key, { owner: this.owner, other, kind: 'claims', path: a.path, subject,
         status: hit ? mapped.approximate ? 'possible' : 'conflict' : 'clean',
+        incomplete: at === undefined || mapped.approximate && bt === undefined && !(theirs.head.level === 'declared'
+          && !(theirs.head.textPrefixes ?? []).some(prefix => containsPath(prefix, b.path))),
         inputs: hash(JSON.stringify([mine.head.semRev, theirs.head.semRev, a.id, a.from, a.to, a.claimedHash, b.id, b.from, b.to, b.claimedHash])),
-        factId: hit ? hash(JSON.stringify([subject, a.from, a.to, mapped])) : '' })
+        factId: hit ? hash(JSON.stringify([subject, a.from, a.to, mapped])) : '',
+        ...(hit && !mapped.approximate ? { evaluatedRanges: [{ from: Math.max(a.from, mapped.from), to: Math.min(a.to, mapped.to) }] } : {}) })
     }
     for (const [key, slot] of this.slots.owned(this.owner)) {
       if (slot.other !== other || (slot.kind !== 'claims' && slot.kind !== 'edit-in-claim') || seen.has(key)) continue
@@ -1569,7 +1224,7 @@ export class ConflictSet {
   }
 }
 
-/** Bridge-facing level reconcile: the team owns the slot, the workers room owns W's notice. */
+/** Bridge-facing reconciliation: the team owns detection state; the bridge mirrors it privately. */
 const projectedSets = new WeakMap<Session, WeakMap<Session, Map<string, ConflictSet>>>()
 export async function reconcileProjectedConflicts({ team, workers, owner }: { team: Session; workers: Session; owner: string }): Promise<void> {
   let byWorkers = projectedSets.get(team)

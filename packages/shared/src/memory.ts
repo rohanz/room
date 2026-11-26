@@ -11,8 +11,11 @@ export const MAX_MEMORY_BYTES = 5 * 1024 * 1024
 export const ROOM_DOC_MAX_BYTES = 64 * 1024 * 1024
 
 /** Memory keeps coordination, including inert saved `aliases` and `unresolved` roots.
- * Live file text and graphs are rebuilt by whoever is present. Completed workers'
- * publications are copied separately, within the snapshot budget. */
+ * Live file text, graphs and conflicts return from surviving replicas or are rebuilt
+ * by whoever is present. Copying conflict values would give an old snapshot new CRDT
+ * writes that can override a survivor's newer result. Owed wakes live in each receiver's
+ * receipt record instead. Completed workers' publications are copied separately,
+ * within the snapshot budget. */
 export const MEMORY_TYPES = {
   bus: 'array', ledger: 'map', retiredWorkers: 'array', workers: 'map',
   scopes: 'map', claims: 'map', unresolved: 'map', aliases: 'map', colors: 'map',

@@ -1,3 +1,5 @@
+import { openConflicts } from '@room/shared'
+import { recordEvaluations } from './fixtures/conflict-evaluations.js'
 import { commitLines, git, lead, LINES, put, setup, worker } from './collect-fixture.js'
 import { registerWorkers } from './registry-fixture.js'
 import { ConflictSet, type ConflictSlot, slotKey } from '../src/conflict-set.js'
@@ -52,13 +54,16 @@ describe('conflict provenance across kept collection and Git history', () => {
       const session = { ...t.s, me: { name: owner, kind: 'agent' }, dir: owner === 'lead' ? lead : owner === 'lead+test' ? worker : bDir,
         post, awareness: { getStates: () => states }, provider: { synced: true }, lease: { fence: () => '1' } } as unknown as Session
       const set = new ConflictSet(session, owner, session, () => {}, 0)
+      const evaluated = recordEvaluations(set)
       try {
         await set.reconcile('provenance regression')
         const slot = t.s.room.doc.getMap<ConflictSlot>('conflicts').get(slotKey(owner, 'merge', other, 'app.py'))
-        expect(slot?.status, JSON.stringify([...t.s.room.doc.getMap('conflicts')])).toBe(conflict ? 'conflict' : 'clean')
-        const notices = post.mock.calls.filter(call => call[1]?.type === 'merge-conflict' && call[1]?.to === owner && call[1]?.text?.includes(`with ${other}`))
+        expect(slot?.status, JSON.stringify([...t.s.room.doc.getMap('conflicts')])).toBe(conflict ? 'conflict' : undefined)
+        expect(evaluated.results.filter(result => result.kind === 'merge' && result.path === 'app.py').at(-1))
+          .toMatchObject({ status: conflict ? 'conflict' : 'clean' })
+        const notices = openConflicts(t.s.room, owner).filter(entry => entry.kind === 'merge' && entry.other === other)
         expect(notices.length).toBe(conflict ? 1 : 0)
-      } finally { set.stop() }
+      } finally { evaluated.stop(); set.stop() }
     }
     const keepA = async () => {
       put(worker, 'app.py', aText)

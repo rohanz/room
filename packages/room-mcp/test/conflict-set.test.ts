@@ -1,9 +1,8 @@
-import { owed, trim, participantsView } from '@room/shared'
-import { hubAppend } from '../../shared/src/testing.js'
 import { mutateWorkerFixture } from './fixtures/worker-record.js'
+import { recordEvaluations } from './fixtures/conflict-evaluations.js'
 import type { Baseline } from '@room/roomd/baseline'
 import { describe, expect, it, vi } from 'vitest'
-import { RoomDoc, formatMsg, memorySnapshot, participantRecord, snapshot, supersededConflictNotices } from '@room/shared'
+import { RoomDoc, participantsView, trim, openConflicts, formatConflictLine, memorySnapshot, participantRecord, snapshot } from '@room/shared'
 import { digestPath, gitBlobHash, manifestKey } from '@room/shared'
 import { Awareness } from 'y-protocols/awareness'
 import * as Y from 'yjs'
@@ -12,8 +11,7 @@ import fs from 'node:fs'
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { createHash } from 'node:crypto'
-import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey, noticeId, peerNoticeId } from '../src/conflict-set.js'
+import { ConflictSet, ConflictSlots, reconcileProjectedConflicts, slotKey } from '../src/conflict-set.js'
 import { GraphIndex } from '../src/graph-index.js'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
@@ -24,6 +22,7 @@ import * as gitModule from '@room/roomd/git'
 import * as parseEngine from '../src/parse/engine.js'
 import { ParseWorker } from '../src/parse/client.js'
 import * as mergeModule from '../src/merge.js'
+import { Ledger, isConflictItem } from '../src/ledger.js'
 
 async function waitForGraph(room: RoomDoc, name: string, rev: number): Promise<void> {
   const deadline = Date.now() + 3000
@@ -41,254 +40,132 @@ async function waitForGraphStatus(room: RoomDoc, name: string, status: 'ready' |
   }
 }
 
-function contractNoticeId(room: RoomDoc, key: string, epoch = 1): string {
-  return noticeId(key, epoch, room.doc.getMap<{ episode?: string }>('conflicts').get(key)?.episode)
-}
 
 describe('ConflictSlots', () => {
+  const evaluation = { owner: 'A', other: 'B', kind: 'merge' as const, path: 'x', inputs: 'i', factId: 'f' }
   it('gives a recreated overlap slot a fresh notice identity after retirement', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1')
     try {
-      const slots = new ConflictSlots(room, post, '1')
       const key = slotKey('A', 'edit-in-claim', 'B', 'x')
-      const result = { owner: 'A', other: 'B', kind: 'edit-in-claim' as const, path: 'x', status: 'conflict' as const, inputs: 'same', factId: 'same', merges: 'clean' as const }
-      await slots.settle(key, result)
-      slots.drop(key)
-      await slots.settle(key, result)
-      await slots.replay('A')
-      for (const to of ['A', 'B']) expect(new Set(post.mock.calls.filter(c => c[1].to === to).map(c => c[2].id)).size).toBe(2)
+      const result = { ...evaluation, kind: 'edit-in-claim' as const, status: 'conflict' as const, merges: 'clean' as const }
+      const first = await slots.settle(key, result)
+      slots.drop(key, { withdrawnParticipants: new Set(['B']) })
+      const reopened = await slots.settle(key, result)
+      expect(first.openId).toEqual(expect.any(String))
+      expect(reopened.openId).not.toBe(first.openId)
     } finally { room.doc.destroy() }
   })
-
-  it('reconciles a pre-existing conflict once and replays the same id after a hub outage', async () => {
-    const room = new RoomDoc()
-    const post = vi.fn().mockResolvedValueOnce({ ok: false, text: 'unreachable' }).mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('a', 'merge', 'b', 'x')
-    await slots.settle(key, { status: 'conflict', inputs: 'i', factId: 'f', path: 'x', owner: 'a', other: 'b', kind: 'merge' })
-    expect(room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-    const id = peerNoticeId('a', 'b', 1, [{ path: 'x', epoch: 1 }], [])
-    expect(post).toHaveBeenCalledWith(expect.anything(), expect.anything(), { id, auto: true })
-    await slots.replay('a')
-    expect(post).toHaveBeenCalledTimes(2)
-    expect(post.mock.calls[1][2].id).toBe(id)
-  })
-
   it('keeps a conflict through unknown and advances its epoch only after clean', async () => {
-    const room = new RoomDoc()
-    const post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('a', 'merge', 'b', 'x')
-    const evaluation = { inputs: 'i', factId: 'f', path: 'x', owner: 'a', other: 'b', kind: 'merge' } as const
-    await slots.settle(key, { ...evaluation, status: 'conflict' })
-    await slots.settle(key, { ...evaluation, status: 'unknown', why: 'missing base' })
-    await slots.settle(key, { ...evaluation, status: 'conflict' })
-    expect(post).toHaveBeenCalledTimes(1)
-    await slots.settle(key, { ...evaluation, status: 'clean' })
-    await slots.settle(key, { ...evaluation, status: 'conflict' })
-    expect(room.doc.getMap('conflicts').get(key)).toMatchObject({ epoch: 2, status: 'conflict' })
-    // Clearing ends the peer episode; the file's next conflict opens a new one.
-    expect(post.mock.calls.map(c => c[2].id)).toEqual([peerNoticeId('a', 'b', 1, [{ path: 'x', epoch: 1 }], []),
-      peerNoticeId('a', 'b', 1, [], [{ path: 'x', epoch: 1 }]), peerNoticeId('a', 'b', 2, [{ path: 'x', epoch: 2 }], [])])
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1'), key = slotKey('A', 'merge', 'B', 'x')
+    try {
+      const first = await slots.settle(key, { ...evaluation, status: 'conflict' })
+      const unknown = await slots.settle(key, { ...evaluation, status: 'unknown', why: 'missing base' })
+      expect(unknown).toMatchObject({ status: 'unknown', settled: 'conflict', openId: first.openId, factId: first.factId })
+      expect((await slots.settle(key, { ...evaluation, status: 'conflict' })).openId).toBe(first.openId)
+      await slots.settle(key, { ...evaluation, status: 'clean' })
+      expect(slots.get(key)).toBeUndefined()
+      expect((await slots.settle(key, { ...evaluation, status: 'conflict' })).openId).not.toBe(first.openId)
+    } finally { room.doc.destroy() }
   })
-
+  it.each(['merge', 'edit-in-claim', 'claims', 'contract'] as const)('%s keeps confirmed evidence even when an incomplete check guesses clean', async kind => {
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1'), key = slotKey('A', kind, 'B', 'x')
+    try {
+      const first = await slots.settle(key, { ...evaluation, kind, status: 'conflict', lines: [7] })
+      const result = await slots.settle(key, { ...evaluation, kind, status: 'clean', incomplete: true, inputs: 'unreadable', factId: '' })
+      expect(result).toMatchObject({ status: 'unknown', settled: 'conflict', openId: first.openId, confirmedAt: first.confirmedAt, factId: first.factId, lines: [7] })
+      expect(slots.get(key)).toEqual(result)
+    } finally { room.doc.destroy() }
+  })
   it('keeps hashless possible inputs stable when only edit time changes', async () => {
-    const room = new RoomDoc()
-    const post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('a', 'merge', 'b', 'x')
-    await slots.settle(key, { status: 'possible', inputs: 'stable', factId: 'possible', path: 'x', owner: 'a', other: 'b', kind: 'merge' })
-    await slots.settle(key, { status: 'possible', inputs: 'stable', factId: 'possible', path: 'x', owner: 'a', other: 'b', kind: 'merge' })
-    expect(post).toHaveBeenCalledTimes(1)
-    expect(room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'possible', epoch: 1 })
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1'), key = slotKey('A', 'merge', 'B', 'x')
+    try {
+      const first = await slots.settle(key, { ...evaluation, status: 'possible', inputs: 'stable', factId: 'possible' })
+      expect(await slots.settle(key, { ...evaluation, status: 'possible', inputs: 'stable', factId: 'possible' })).toBe(first)
+      expect(slots.get(key)).toMatchObject({ status: 'possible', inputs: 'stable' })
+    } finally { room.doc.destroy() }
   })
-
   it('does not renotify unchanged conflicting hunks after an input edit', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('a', 'merge', 'b', 'x')
-    const base = { status: 'conflict' as const, factId: 'same-hunks', path: 'x', owner: 'a', other: 'b', kind: 'merge' as const }
-    await slots.settle(key, { ...base, inputs: 'before' })
-    await slots.settle(key, { ...base, inputs: 'after' })
-    expect(post).toHaveBeenCalledTimes(1)
-    expect(slots.get(key)?.epoch).toBe(1)
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1'), key = slotKey('A', 'merge', 'B', 'x')
+    try {
+      const first = await slots.settle(key, { ...evaluation, status: 'conflict', inputs: 'before' })
+      expect(await slots.settle(key, { ...evaluation, status: 'conflict', inputs: 'after' })).toMatchObject({ openId: first.openId, factId: first.factId, inputs: 'after' })
+    } finally { room.doc.destroy() }
   })
-
   it('advances after clean then unknown then conflict', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('a', 'merge', 'b', 'x')
-    const base = { factId: 'hunks', path: 'x', owner: 'a', other: 'b', kind: 'merge' as const }
-    await slots.settle(key, { ...base, status: 'conflict', inputs: '1' })
-    await slots.settle(key, { ...base, status: 'clean', inputs: '2' })
-    await slots.settle(key, { ...base, status: 'unknown', inputs: '3' })
-    await slots.settle(key, { ...base, status: 'conflict', inputs: '4' })
-    expect(slots.get(key)?.epoch).toBe(2)
-    // Clearing ends the peer episode; the file's next conflict opens a new one.
-    expect(post.mock.calls.map(c => c[2].id)).toEqual([peerNoticeId('a', 'b', 1, [{ path: 'x', epoch: 1 }], []),
-      peerNoticeId('a', 'b', 1, [], [{ path: 'x', epoch: 1 }]), peerNoticeId('a', 'b', 2, [{ path: 'x', epoch: 2 }], [])])
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1'), key = slotKey('A', 'merge', 'B', 'x')
+    try {
+      const first = await slots.settle(key, { ...evaluation, status: 'conflict', inputs: '1' })
+      await slots.settle(key, { ...evaluation, status: 'clean', inputs: '2' })
+      expect(await slots.settle(key, { ...evaluation, status: 'unknown', inputs: '3' })).toMatchObject({ settled: 'none' })
+      expect(openConflicts(room, 'A')).toEqual([])
+      const next = await slots.settle(key, { ...evaluation, status: 'conflict', inputs: '4' })
+      expect(next.openId).not.toBe(first.openId)
+      expect(openConflicts(room, 'A')[0]?.slots).toEqual([next])
+    } finally { room.doc.destroy() }
   })
-
   it('describes the held owner instead of blaming the other participant', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    await slots.settle(slotKey('A', 'merge', 'B', 'x'), { owner: 'A', other: 'B', kind: 'merge', path: 'x', status: 'possible', inputs: 'i', factId: 'f', why: 'A' })
-    expect(post.mock.calls[0][1].text).toContain("A's file contents are not shared")
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1')
+    try {
+      await slots.settle(slotKey('A', 'merge', 'B', 'x'), { ...evaluation, status: 'possible', why: 'A' })
+      expect(openConflicts(room, 'A')[0]?.text).toContain("A's file contents are not shared")
+    } finally { room.doc.destroy() }
   })
-
-  it('routes a claim holder notice to the holder room with the holder perspective', async () => {
-    const room = new RoomDoc(), ownerPost = vi.fn().mockResolvedValue({ ok: true }), holderPost = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, ownerPost, '1', Date.now, () => {}, holderPost)
-    const key = slotKey('W', 'edit-in-claim', 'B', 'x', 'claim')
-    await slots.settle(key, { owner: 'W', other: 'B', kind: 'edit-in-claim', path: 'x', subject: 'claim', status: 'conflict', inputs: 'i', factId: 'f' })
-    await slots.replay('W')
-    expect(ownerPost.mock.calls.every(c => c[1].to === 'W')).toBe(true)
-    expect(holderPost.mock.calls.every(c => c[1].to === 'B' && c[1].text.includes('W edited x inside your claim'))).toBe(true)
-  })
-
   it('re-fences an unchanged slot for a new owner epoch without sending a duplicate fact', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    let fence = '1'
-    const slots = new ConflictSlots(room, post, () => fence)
-    const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-    const result = { owner: 'A', other: 'B', kind: 'contract' as const, path: 'api.py', subject: 'call', status: 'conflict' as const, inputs: 'same', factId: 'same' }
-    await slots.settle(key, result)
-    fence = '2'
-    await slots.settle(key, result)
-    expect(slots.get(key)).toMatchObject({ fence: '2', epoch: 1 })
-    expect(post).toHaveBeenCalledTimes(1)
+    const room = new RoomDoc(); let fence = '1'
+    const slots = new ConflictSlots(room, () => fence), key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+    const result = { ...evaluation, kind: 'contract' as const, path: 'api.py', subject: 'call', status: 'conflict' as const }
+    try {
+      const first = await slots.settle(key, result); fence = '2'
+      expect(await slots.settle(key, result)).toMatchObject({ fence: '2', openId: first.openId, factId: first.factId })
+    } finally { room.doc.destroy() }
   })
-
   it('R5 repairs a legacy empty-fence slot on the first valid owner evaluation', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-    const result = { owner: 'A', other: 'B', kind: 'contract' as const, path: 'api.py', subject: 'call', status: 'conflict' as const, inputs: 'same', factId: 'same' }
-    await new ConflictSlots(room, post, '').settle(key, result)
-    await new ConflictSlots(room, post, () => '42').settle(key, result)
-    expect(room.doc.getMap<{ fence: string; epoch: number }>('conflicts').get(key)).toMatchObject({ fence: '42', epoch: 1 })
-    expect(post).toHaveBeenCalledTimes(1)
+    const room = new RoomDoc(), key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+    const result = { ...evaluation, kind: 'contract' as const, path: 'api.py', subject: 'call', status: 'conflict' as const }
+    try {
+      const first = await new ConflictSlots(room, '').settle(key, result)
+      expect(await new ConflictSlots(room, () => '42').settle(key, result)).toMatchObject({ fence: '42', openId: first.openId })
+    } finally { room.doc.destroy() }
   })
-
-  it('revalidates each replay notice after an awaited post moves the lease', async () => {
-    const room = new RoomDoc()
-    let current = true, replaying = false
-    const post = vi.fn().mockImplementation(async () => { if (replaying) current = false; return { ok: true } })
-    const slots = new ConflictSlots(room, post, '1', Date.now, () => {}, post, () => current)
-    for (const path of ['x', 'y']) await slots.settle(slotKey('A', 'merge', 'B', path),
-      { owner: 'A', other: 'B', kind: 'merge', path, status: 'conflict', inputs: path, factId: path })
-    post.mockClear(); replaying = true
-    await slots.replay('A')
-    expect(post).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not send the holder copy after the owner post invalidates the captured claim', async () => {
-    const room = new RoomDoc(), holderPost = vi.fn().mockResolvedValue({ ok: true })
-    let current = true
-    const ownerPost = vi.fn().mockImplementation(async () => { current = false; return { ok: true } })
-    const slots = new ConflictSlots(room, ownerPost, '1', Date.now, () => {}, holderPost, () => current)
-    const key = slotKey('W', 'edit-in-claim', 'B', 'x', 'claim')
-    await slots.settle(key, { owner: 'W', other: 'B', kind: 'edit-in-claim', path: 'x', subject: 'claim', status: 'conflict', inputs: 'i', factId: 'f' })
-    expect(ownerPost).toHaveBeenCalledTimes(1)
-    expect(holderPost).not.toHaveBeenCalled()
-  })
-
-  it('labels a cleared possibility without claiming a certified conflict existed', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockImplementation(async (_from, body) => ({ ok: true, msg: { ...body, id: 'm', from: 'room', fromKind: 'agent', at: 1 } }))
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('A', 'merge', 'B', 'x')
-    const base = { owner: 'A', other: 'B', kind: 'merge' as const, path: 'x' }
-    await slots.settle(key, { ...base, status: 'possible', inputs: 'held', factId: 'f' })
-    await slots.settle(key, { ...base, status: 'clean', inputs: 'readable', factId: '' })
-    expect(post.mock.calls[1][1]).toMatchObject({ clearedFrom: 'possible' })
-    expect(formatMsg(post.mock.calls[1][1] as any)).toContain('POSSIBLE conflict cleared')
-    const certified = slotKey('A', 'merge', 'C', 'y')
-    await slots.settle(certified, { owner: 'A', other: 'C', kind: 'merge', path: 'y', status: 'conflict', inputs: 'bad', factId: 'f' })
-    await slots.settle(certified, { owner: 'A', other: 'C', kind: 'merge', path: 'y', status: 'clean', inputs: 'good', factId: '' })
-    expect(formatMsg(post.mock.calls[3][1] as any)).toContain('CONFLICT cleared')
-  })
-
-  it('deduplicates cleared notices for the same peer and path and leaves the path to the formatter', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    for (const kind of ['merge', 'edit-in-claim'] as const) {
-      const key = slotKey('A', kind, 'B', 'x', kind === 'edit-in-claim' ? 'c' : '')
-      const base = { owner: 'A', other: 'B', kind, path: 'x', ...(kind === 'edit-in-claim' ? { subject: 'c' } : {}) }
-      await slots.settle(key, { ...base, status: 'possible', inputs: 'one', factId: 'f' })
-      await slots.settle(key, { ...base, status: 'clean', inputs: 'two', factId: '' })
-    }
-    const cleared = post.mock.calls.filter(c => c[1].clearedFrom)
-    expect(new Set(cleared.map(c => c[2].id)).size).toBe(1)
-    expect(cleared[0][1].text).toBe('the possible conflict with B cleared')
-  })
-
-  it('uses notify for the lead when the claim holder is its running worker', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    room.workerViews.set('w', { id: 'w', tag: 'w', name: 'A+w', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'running', run: 1, startedAt: 1, fence: '1' })
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('A', 'edit-in-claim', 'A+w', 'x')
-    await slots.settle(key, { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'c', status: 'conflict', inputs: 'i', factId: 'f' })
-    await slots.settle(key, { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'd', status: 'conflict', inputs: 'renewed claim', factId: 'f' })
-    expect(post.mock.calls[0][1].priority).toBe('notify')
-    expect(new Set(post.mock.calls.filter(c => c[1].to === 'A').map(c => c[2].id)).size).toBe(1)
-  })
-
   it("tells the lead when its running worker's clean overlap stops merging", async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1'), key = slotKey('A', 'edit-in-claim', 'A+w', 'x', 'c')
     room.workerViews.set('w', { id: 'w', tag: 'w', name: 'A+w', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'running', run: 1, startedAt: 1, fence: '1' })
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('A', 'edit-in-claim', 'A+w', 'x', 'c'), base = { owner: 'A', other: 'A+w', kind: 'edit-in-claim' as const, path: 'x', subject: 'c', status: 'conflict' as const }
-    await slots.settle(key, { ...base, inputs: 'i1', factId: 'clean', merges: 'clean' })
-    await slots.settle(key, { ...base, inputs: 'i2', factId: 'conflicting' })
-    const toLead = [...new Map(post.mock.calls.filter(c => c[1].to === 'A').map(c => [c[2].id, c[1]])).values()]
-    expect(toLead.map(body => formatMsg({ id: 'm', from: 'room', fromKind: 'bot', at: 1, ...body } as any).replace(/:.*/, '')))
-      .toEqual(['[notify] overlap on x', '[notify] CONFLICT on x'])
-    // And back: the versions merge again, and the lead is told so.
-    await slots.settle(key, { ...base, inputs: 'i3', factId: 'clean again', merges: 'clean' })
-    const ids = post.mock.calls.filter(c => c[1].to === 'A').map(c => c[2].id)
-    expect(new Set(ids).size).toBe(3)
-    expect(post.mock.calls.filter(c => c[1].to === 'A').at(-1)![1].text).toMatch(/; merges cleanly$/)
+    const result = { ...evaluation, other: 'A+w', kind: 'edit-in-claim' as const, subject: 'c', status: 'conflict' as const }
+    try {
+      await slots.settle(key, { ...result, inputs: 'i1', factId: 'clean', merges: 'clean' })
+      expect(formatConflictLine(openConflicts(room, 'A')[0]!)).toMatch(/^\[fyi\] overlap: /)
+      await slots.settle(key, { ...result, inputs: 'i2', factId: 'conflicting' })
+      expect(formatConflictLine(openConflicts(room, 'A')[0]!)).toMatch(/^\[notify\] CONFLICT: /)
+      await slots.settle(key, { ...result, inputs: 'i3', factId: 'clean again', merges: 'clean' })
+      expect(openConflicts(room, 'A')[0]?.text).toMatch(/; merges cleanly$/)
+    } finally { room.doc.destroy() }
   })
-
-  it('replays a cleared overlap under the same id and wording after an unreadable pass', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('A', 'edit-in-claim', 'B', 'x', 'c'), base = { owner: 'A', other: 'B', kind: 'edit-in-claim' as const, path: 'x', subject: 'c' }
-    await slots.settle(key, { ...base, status: 'conflict', inputs: 'i1', factId: 'f', merges: 'clean' })
-    await slots.settle(key, { ...base, status: 'clean', inputs: 'reverted', factId: '' })
-    const cleared = post.mock.calls.at(-1)!
-    await slots.settle(key, { ...base, status: 'unknown', inputs: 'unreadable', factId: '', why: 'cannot map claim' })
-    await slots.replay('A')
-    const replayed = post.mock.calls.at(-1)!
-    expect(replayed[2].id).toBe(cleared[2].id)
-    expect(formatMsg({ id: 'm', from: 'room', fromKind: 'bot', at: 1, ...replayed[1] } as any)).toContain('overlap cleared on x: the overlap with B cleared')
-  })
-
   it('keeps an overlap an overlap through an unreadable pass, so its release says "overlap cleared"', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    const key = slotKey('A', 'edit-in-claim', 'B', 'x', 'c'), base = { owner: 'A', other: 'B', kind: 'edit-in-claim' as const, path: 'x', subject: 'c' }
-    await slots.settle(key, { ...base, status: 'conflict', inputs: 'i1', factId: 'f', merges: 'clean' })
-    await slots.settle(key, { ...base, status: 'unknown', inputs: 'i2', factId: '', why: 'cannot map claim' })
-    await slots.settle(key, { ...base, status: 'clean', inputs: 'released', factId: '' })
-    const last = post.mock.calls.filter(c => c[1].to === 'A').at(-1)![1]
-    expect(formatMsg({ id: 'm', from: 'room', fromKind: 'bot', at: 1, ...last } as any)).toContain('overlap cleared on x: the overlap with B cleared')
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1'), key = slotKey('A', 'edit-in-claim', 'B', 'x', 'c')
+    const result = { ...evaluation, kind: 'edit-in-claim' as const, subject: 'c' }
+    try {
+      const first = await slots.settle(key, { ...result, status: 'conflict', merges: 'clean' })
+      expect(await slots.settle(key, { ...result, status: 'unknown', inputs: 'unreadable', factId: '', why: 'cannot map claim' })).toMatchObject({ settled: 'conflict', merges: 'clean', openId: first.openId })
+      expect(formatConflictLine(openConflicts(room, 'A')[0]!)).toMatch(/^\[fyi\] overlap: .*; recheck unavailable$/)
+      await slots.settle(key, { ...result, status: 'clean', inputs: 'released', factId: '' })
+      expect(openConflicts(room, 'A')).toEqual([])
+    } finally { room.doc.destroy() }
   })
-
   it('describes an earlier committed edit as preceding a new claim', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true }), holder = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1', Date.now, () => {}, holder)
-    await slots.settle(slotKey('A', 'edit-in-claim', 'B', 'x', 'c'), { owner: 'A', other: 'B', kind: 'edit-in-claim', path: 'x', subject: 'c', status: 'conflict', inputs: 'i', factId: 'f', earlierSha: 'abc1234' })
-    expect(post.mock.calls[0][1].text).toContain("your earlier change to x (abc1234) overlaps B's new claim")
-    expect(holder.mock.calls[0][1].text).toContain("A's earlier change to x (abc1234) overlaps your new claim")
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1')
+    try {
+      await slots.settle(slotKey('A', 'edit-in-claim', 'B', 'x', 'c'), { ...evaluation, kind: 'edit-in-claim', subject: 'c', status: 'conflict', earlierSha: 'abc1234' })
+      expect(openConflicts(room, 'A')[0]?.text).toContain("your earlier change to x (abc1234) overlaps B's new claim")
+      expect(openConflicts(room, 'B')[0]?.text).toContain("A's earlier change to x (abc1234) overlaps your new claim")
+    } finally { room.doc.destroy() }
   })
-
   it('never replays an edit-in-claim notice about an own finished worker', async () => {
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
+    const room = new RoomDoc(), slots = new ConflictSlots(room, '1')
     room.workerViews.set('w', { id: 'w', tag: 'w', name: 'A+w', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'done', run: 1, startedAt: 1, fence: '1' })
-    const slots = new ConflictSlots(room, post, '1')
-    await slots.settle(slotKey('A', 'edit-in-claim', 'A+w', 'x', 'c'), { owner: 'A', other: 'A+w', kind: 'edit-in-claim', path: 'x', subject: 'c', status: 'conflict', inputs: 'i', factId: 'f' })
-    await slots.replay('A')
-    expect(post).not.toHaveBeenCalled()
+    try {
+      await slots.settle(slotKey('A', 'edit-in-claim', 'A+w', 'x', 'c'), { ...evaluation, other: 'A+w', kind: 'edit-in-claim', subject: 'c', status: 'conflict' })
+      expect(openConflicts(room, 'A')).toEqual([])
+    } finally { room.doc.destroy() }
   })
 })
 
@@ -345,7 +222,6 @@ describe('derived pair slots', () => {
       f.room.setOverlay(manifestKey('A', '1'), path, 'edited\n')
       await set.reconcile('committed rename')
       expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', path))).toMatchObject({ status: 'conflict', path })
-      expect(f.post.mock.calls.some(call => call[1].type === 'merge-conflict')).toBe(true)
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
@@ -394,20 +270,21 @@ describe('derived pair slots', () => {
     }
     if (claimed) f.room.addClaim({ by: 'B', byKind: 'agent', path, from: 1, to: 1, intent: 'implement shared include' })
     const set = new ConflictSet(f.session('A'))
-    const key = slotKey('A', 'merge', 'B', path)
+    const key = slotKey('A', 'merge', 'B', path), evaluated = recordEvaluations(set)
     try {
       await set.reconcile('identical peer copy')
       await set.reconcile('unchanged identical copy')
-      expect(f.room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'clean', epoch: 0 })
+      expect(f.room.doc.getMap('conflicts').has(key)).toBe(false)
+      expect(evaluated.results.filter(result => result.kind === 'merge' && result.path === path).at(-1)).toMatchObject({ status: 'clean' })
       expect(f.post).not.toHaveBeenCalled()
       f.room.manifest.get(manifestKey('A', '1'))!.delete(path)
       f.room.clearOverlay(manifestKey('A', '1'), path)
       await set.reconcile('temporary copy removed')
       expect(f.post).not.toHaveBeenCalled()
-    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+    } finally { evaluated.stop(); set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
-  it('keeps the add/add notice id when its first differing line moves', async () => {
+  it('keeps the add/add fact when its first differing line moves', async () => {
     const f = fixture(), path = 'copied.lua'
     f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
     const publish = (name: string, text: string, rev: number) => {
@@ -420,11 +297,10 @@ describe('derived pair slots', () => {
       publish('A', 'header\nours\n', 1); publish('B', 'header\ntheirs\n', 1)
       await set.reconcile('diverged')
       const first = f.room.doc.getMap<any>('conflicts').get(key)
-      expect(first).toMatchObject({ status: 'conflict', epoch: 1, lines: [2] })
+      expect(first).toMatchObject({ status: 'conflict', lines: [2] })
       publish('B', 'new header\nheader\ntheirs\n', 2)
       await set.reconcile('difference moved')
-      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ factId: first.factId, epoch: 1, lines: [1] })
-      expect(new Set(f.post.mock.calls.filter(call => call[1]?.type === 'merge-conflict').map(call => call[2].id)).size).toBe(1)
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ factId: first.factId, lines: [1] })
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
@@ -448,7 +324,6 @@ describe('derived pair slots', () => {
       await set.reconcile('sibling check')
       const other = owner === 'W' ? 'X' : 'W'
       expect(f.room.doc.getMap<any>('conflicts').get(slotKey(owner, 'merge', other, 'x'))?.status).not.toBe('conflict')
-      expect(f.post.mock.calls.filter(call => call[1]?.type === 'merge-conflict')).toEqual([])
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
@@ -492,16 +367,15 @@ describe('derived pair slots', () => {
     publish('W', base.replace('one', 'worker'), 1); publish('L', base.replace('five', 'lead'), 1)
     const set = new ConflictSet(f.session(owner), owner, f.session(owner), () => {}, 0,
       person => person === 'W' ? { baseline, lead: 'L' } : undefined)
-    const key = slotKey(owner, 'merge', owner === 'W' ? 'L' : 'W', path)
+    const key = slotKey(owner, 'merge', owner === 'W' ? 'L' : 'W', path), evaluated = recordEvaluations(set)
     try {
       await set.reconcile('independent edits to carried addition')
-      expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('clean')
-      expect(f.post.mock.calls.filter(c => c[1]?.type === 'merge-conflict')).toEqual([])
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBeUndefined()
+      expect(evaluated.results.filter(result => result.kind === 'merge' && result.path === path).at(-1)).toMatchObject({ status: 'clean' })
       publish('L', base.replace('one', 'lead competing'), 2)
       await set.reconcile('real conflict in carried addition')
       expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('conflict')
-      expect(f.post.mock.calls.some(c => c[1]?.type === 'merge-conflict')).toBe(true)
-    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+    } finally { evaluated.stop(); set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
   it.each(['W', 'L'])('uses the kept worker baseline for live merge comparison from %s', async owner => {
@@ -522,7 +396,6 @@ describe('derived pair slots', () => {
       person => person === 'W' ? { baseline, lead: 'L' } : undefined)
     try {
       await set.reconcile('lead revises delivered work')
-      expect(f.post.mock.calls.filter(call => call[1]?.type === 'merge-conflict')).toEqual([])
       expect(f.room.doc.getMap<any>('conflicts').get(slotKey(owner, 'merge', owner === 'W' ? 'L' : 'W', 'x'))?.status).not.toBe('conflict')
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
@@ -543,14 +416,13 @@ describe('derived pair slots', () => {
     const set = new ConflictSet(f.session('A'))
     try {
       await set.reconcile('divergent peer copies')
-      const notices = () => [...new Map(f.post.mock.calls.map(c => [c[2].id, c[1]])).values()]
-      expect(notices()).toEqual([expect.objectContaining({ type: 'merge-conflict', priority: 'notify', path,
+      const notices = () => openConflicts(f.room, 'A')
+      expect(notices()).toEqual([expect.objectContaining({ priority: 'notify', slots: [expect.objectContaining({ path })],
         text: `${path} conflicts with B's version at lines ${line}` })])
       publish('A', theirs)
       await set.reconcile('copies converge')
       await set.reconcile('still identical')
-      expect(notices()).toHaveLength(2)
-      expect(notices()[1]).toMatchObject({ priority: 'fyi', clearedFrom: 'conflict', text: 'the conflict with B cleared' })
+      expect(notices()).toHaveLength(0)
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
@@ -600,31 +472,7 @@ describe('derived pair slots', () => {
       }
       await set.reconcile('lead no longer authorizes cache')
       expect(restored.doc.getMap('conflicts').has(slotKey('A', 'merge', 'B', 'x'))).toBe(false)
-      expect(f.post.mock.calls.some(([, body]) => body.type === 'merge-conflict')).toBe(false)
     } finally { set.stop(); restored.doc.destroy(); f.room.doc.destroy(); f.cleanup() }
-  })
-
-  it('defers stale replay slots after an awaited post changes another conflict input', async () => {
-    const f = fixture({ y: 'old\n' })
-    f.holder('A'); f.holder('B'); f.entry('A', 'A\n'); f.entry('B', 'B\n')
-    const publishY = (name: string, text: string) => {
-      f.room.manifest.get(manifestKey(name, '1'))!.set('y', { change: 'M', state: 'shared', hash: gitBlobHash(text), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey(name, '1'), 'y', text)
-    }
-    publishY('A', 'A\n'); publishY('B', 'B\n')
-    const set = new ConflictSet(f.session('A'), 'A', f.session('A'), () => {}, 0, () => undefined)
-    try {
-      await set.reconcile('initial conflicts')
-      f.post.mockClear()
-      let edited = false
-      f.post.mockImplementation(async (_from, body) => {
-        if (!edited) { edited = true; publishY('B', 'A\n') }
-        return { ok: true, msg: body }
-      })
-      await set.reconcile('replay freshly evaluated pairs')
-      expect(f.post.mock.calls.some(([, body]) => body.path === 'y' && body.type === 'merge-conflict' && !body.clearedFrom)).toBe(false)
-      expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'merge', 'B', 'y'))).toMatchObject({ status: 'clean' })
-    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
   async function bindProjectedFixture(f: ReturnType<typeof fixture>, team: Session, workers: Session) {
@@ -637,41 +485,6 @@ describe('derived pair slots', () => {
     f.room.participants.set('W\0proj', { projectedBy: 'L', projectedFrom: record.id })
     workers.room.participants.set('W\0holder', { ...participantRecord(workers.room, 'W')!.holder!, workerId: record.id })
   }
-
-  it('rereads projected source provenance before replaying an unchanged merge', async () => {
-    const f = fixture(), source = new RoomDoc()
-    f.holder('L'); f.holder('W', 'L'); f.holder('B')
-    f.entry('L', undefined); f.entry('W', undefined, false, 'L'); f.entry('B', 'peer\n')
-    const projected = f.room.manifest.get(manifestKey('W', '1'))!
-    projected.set('x', { change: 'M', state: 'held', hash: gitBlobHash('worker\n'), held: 'worker', at: 1, fence: '1' })
-    source.participants.set('W\0holder', { sessionId: 'session-W', epoch: 2, workerId: 'w' })
-    source.participants.set('W\0git', { branch: 'main', head: f.base, base: f.base, anchored: true, rev: 1, fence: '2' })
-    source.manifestHead.set('W', { base: f.base, fence: '2', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
-    const entries = new Y.Map<any>()
-    entries.set('x', { change: 'M', state: 'shared', hash: gitBlobHash('worker\n'), at: 1, fence: '2' })
-    source.manifest.set(manifestKey('W', '2'), entries)
-    source.setOverlay(manifestKey('W', '2'), 'x', 'worker\n')
-    const post = vi.fn().mockResolvedValue({ ok: true })
-    const workers = { ...f.session('L', post), room: source } as Session
-    const team = f.session('L')
-    await bindProjectedFixture(f, team, workers)
-    const set = new ConflictSet(team, 'W', workers, () => {}, 0, () => undefined)
-    const read = vi.spyOn(set as unknown as { read(...args: unknown[]): Promise<unknown> }, 'read')
-    try {
-      await set.reconcile('initial source')
-      expect(post).toHaveBeenCalled()
-      post.mockClear(); read.mockClear()
-      // Only the source-room snapshot changes; team inputs and file hashes stay fixed.
-      source.manifestHead.set('W', { ...source.manifestHead.get('W')!, rev: 2, semRev: 2 })
-      post.mockImplementation(async () => {
-        expect(read.mock.calls.some(([snap]) => (snap as { name: string }).name === 'W')).toBe(true)
-        return { ok: true }
-      })
-      await set.reconcile('source invalidated')
-      expect(read.mock.calls.some(([snap]) => (snap as { name: string }).name === 'W')).toBe(true)
-      expect(post).toHaveBeenCalled()
-    } finally { set.stop(); source.doc.destroy(); f.room.doc.destroy(); f.cleanup() }
-  })
 
   it('reevaluates claims when a worker finishes or changes runs', async () => {
     const f = fixture()
@@ -695,6 +508,40 @@ describe('derived pair slots', () => {
       view(3); await set.reconcile('new run')
       expect(claims).toHaveBeenCalledTimes(4)
     } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it.each(['claims', 'edit-in-claim'] as const)('a resumed worker keeps detected %s state despite a stale done display view', async kind => {
+    const f = fixture()
+    f.holder('A', undefined, 2); f.holder('B', undefined, 2)
+    f.entry('A', 'A\n', false, undefined, 2); f.entry('B', 'B\n', false, undefined, 2)
+    f.localFence.value = '2'
+    f.room.participants.set('B\0holder', { ...participantRecord(f.room, 'B')!.holder!, workerId: 'w' })
+    f.room.workerViews.set('w', { id: 'w', tag: 'w', name: 'B', lead: 'A', mode: 'here', host: 'codex',
+      task: 'edit', branch: 'b', status: 'done', run: 1, startedAt: 1, fence: '1' })
+    if (kind === 'claims') f.room.addClaim({ by: 'A', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'lead edit' })
+    f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'resumed worker edit' })
+    const session = f.session('A'); session.roomName = 'resumed-worker'
+    const set = new ConflictSet(session, 'A', session, () => {}, 0, () => undefined,
+      async name => name === 'B' ? { id: 'w', status: 'running', dir: f.dir, run: '2:nonce', seq: 2 } : undefined)
+    const ledger = new Ledger({ sessionId: () => 'session-A', route: () => ({}) }); ledger.bind(session)
+    try {
+      expect(f.room.acceptedWorkerViewOf('B')).toBeUndefined()
+      await set.reconcile('resumed worker with stale final display')
+      const [key, stored] = [...f.room.doc.getMap<import('../src/conflict-set.js').ConflictSlot>('conflicts')]
+        .find(([, slot]) => slot.kind === kind)!
+      expect(stored).toMatchObject({ status: 'conflict', settled: 'conflict' })
+      const current = openConflicts(f.room, 'A').filter(entry => entry.kind === kind)
+      // Main's edit-in-claim display suppression remains; claims must still notify.
+      expect(current).toHaveLength(kind === 'claims' ? 1 : 0)
+      if (kind === 'claims') {
+        expect(current[0]!.priority).toBe('notify')
+        const owed = ledger.candidates(session).filter(isConflictItem).filter(item => item.conflict?.kind === kind)
+        expect(owed).toHaveLength(1)
+        expect(ledger.conflictWakeable(session, owed[0]!)).toBe(true)
+      }
+      new ConflictSlots(f.room, '2').drop(key)
+      expect(f.room.doc.getMap('conflicts').get(key)).toEqual(stored)
+    } finally { ledger.unbind(session); set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
   it('retries unchanged pair inputs after a failed file check reaches its retry deadline', async () => {
@@ -882,14 +729,16 @@ describe('derived pair slots', () => {
       for (let i = 0; i < 1_000; i++) {
         const key = slotKey('A', 'contract', 'B', 'x', `symbol-${i}`)
         slots.set(key, { kind: 'contract', owner: 'A', other: 'B', path: 'x', subject: `symbol-${i}`,
-          status: 'conflict', inputs: 'i', factId: 'f', settled: 'conflict', epoch: 1, fence: '1', checkedAt: 1,
+          openId: `bulk-${i}`, endpoints: [{ name: 'A' }, { name: 'B' }],
+          status: 'conflict', inputs: 'i', factId: 'f', settled: 'conflict', fence: '1', checkedAt: 1,
           consumers: ['x'] })
       }
       const set = new ConflictSet(f.session('A'))
       const toString = vi.spyOn(Y.Text.prototype, 'toString')
-      ;(set as any).withdrawUnauthorizedContracts()
-      expect(toString.mock.calls.length).toBeLessThanOrEqual(1_002)
-      toString.mockRestore()
+      try {
+        ;(set as any).withdrawEndedConflicts()
+        expect(toString.mock.calls.length).toBeLessThanOrEqual(1_002)
+      } finally { toString.mockRestore() }
       expect(slots.size).toBe(1_000)
     } finally { f.cleanup() }
   })
@@ -975,7 +824,6 @@ describe('derived pair slots', () => {
       const key = slotKey('A', 'merge', 'B', 'x')
       expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('possible')
       const firstInputs = f.room.doc.getMap<{ inputs: string }>('conflicts').get(key)!.inputs
-      const firstId = f.post.mock.calls.find(c => c[2]?.id?.startsWith('cf:'))?.[2].id
       f.entry('B', undefined, true) // a new scan with the same hidden fact
       const held = f.room.manifest.get(manifestKey('B', '1'))!.get('x')!
       f.room.manifest.get(manifestKey('B', '1'))!.set('x', { ...held, at: 4 })
@@ -984,15 +832,14 @@ describe('derived pair slots', () => {
       expect(f.room.doc.getMap<{ inputs: string }>('conflicts').get(key)?.inputs).toBe(firstInputs)
       f.entry('A', 'AA\n')
       await new ConflictSet(f.session('A')).reconcile('test')
-      expect(f.room.doc.getMap<{ epoch: number }>('conflicts').get(key)?.epoch).toBe(1)
+      expect(f.room.doc.getMap<{ openId: string }>('conflicts').get(key)?.openId).toBeTruthy()
       f.entry('B', 'B\n')
       await new ConflictSet(f.session('A')).reconcile('test')
       expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('conflict')
-      expect(f.post.mock.calls.some(c => c[2]?.id !== firstId && c[1]?.type === 'merge-conflict')).toBe(true)
     } finally { f.cleanup() }
   })
 
-  it('writes a projected worker edit-in-claim slot in team and posts to workers room', async () => {
+  it('writes a projected worker edit-in-claim slot in team and exposes it from state', async () => {
     const f = fixture()
     try {
       f.holder('L'); f.holder('W', 'L'); f.holder('B')
@@ -1004,7 +851,8 @@ describe('derived pair slots', () => {
       await reconcileProjectedConflicts({ team, workers: f.session('L', workersPost), owner: 'W' })
       const slots = [...f.room.doc.getMap<{ owner: string; kind: string; status: string; fence: string }>('conflicts').values()]
       expect(slots).toContainEqual(expect.objectContaining({ owner: 'W', kind: 'edit-in-claim', status: 'conflict', fence: '1' }))
-      expect(workersPost).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'W', type: 'conflict' }), expect.objectContaining({ id: expect.stringMatching(/^cf:/), auto: true }))
+      expect(workersPost).not.toHaveBeenCalled()
+      expect(openConflicts(f.room, 'W').some(entry => entry.kind === 'edit-in-claim')).toBe(true)
     } finally { f.cleanup() }
   })
 
@@ -1022,7 +870,6 @@ describe('derived pair slots', () => {
         () => ({ ...state }))
       await set.reconcile('manual apply')
       expect(f.room.openClaims().filter(c => c.by === 'L+w')).toEqual([])
-      expect(f.post.mock.calls.filter(c => c[1].type === 'conflict')).toEqual([])
       expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(1)
       await set.reconcile('again')
       expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(1)
@@ -1139,6 +986,7 @@ describe('derived pair slots', () => {
         () => ({ ...state, name: 'L+w', lead: 'L', dir: linked }))
       await set.reconcile('manual apply')
       expect(f.room.openClaims().filter(c => c.by === 'L+w')).toEqual([])
+      expect(f.post.mock.calls.filter(c => c[1].type === 'note' && c[1].text.includes("released L+w's claims"))).toHaveLength(1)
     } finally { f.cleanup(); rmSync(linked, { force: true }); rmSync(workerDir, { recursive: true, force: true }) }
   })
 
@@ -1272,8 +1120,8 @@ describe('derived pair slots', () => {
       await bindProjectedFixture(f, team, workers)
       await reconcileProjectedConflicts({ team, workers, owner: 'W' })
       expect(f.room.doc.getMap<any>('conflicts').get(slotKey('W', 'edit-in-claim', 'B', 'x'))?.status).toBe('conflict')
-      expect(sourcePost).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'W' }), expect.anything())
-      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ to: 'B', text: expect.stringContaining("W's earlier change to x overlaps your new claim") }), expect.anything())
+      expect(sourcePost).not.toHaveBeenCalled()
+      expect(openConflicts(f.room, 'W').some(entry => entry.kind === 'edit-in-claim')).toBe(true)
     } finally { f.cleanup() }
   })
 
@@ -1369,7 +1217,6 @@ describe('derived pair slots', () => {
       await set.reconcile('object temporarily unavailable again')
       expect(f.post).not.toHaveBeenCalled()
       await set.reconcile('recovered again')
-      expect(f.post).toHaveBeenCalled()
     } finally { compare.mockRestore(); set.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
@@ -1407,7 +1254,6 @@ describe('derived pair slots', () => {
       await new ConflictSet(f.session('A')).reconcile('large claim')
       const slot = [...f.room.doc.getMap<any>('conflicts').values()].find(s => s.kind === 'edit-in-claim')
       expect(slot?.status).toBe('possible')
-      expect(f.post.mock.calls.some(c => c[1].type === 'conflict' && c[1].text.includes('line mapping is approximate'))).toBe(true)
     } finally { f.cleanup() }
   })
 
@@ -1422,7 +1268,6 @@ describe('derived pair slots', () => {
       }
       await set.reconcile('narrowed')
       expect(f.room.doc.getMap<any>('conflicts').get(slotKey('A', 'merge', 'B', 'x'))?.status).not.toBe('conflict')
-      expect(f.post.mock.calls.some(c => c[1].type === 'merge-conflict' && c[1].priority === 'notify')).toBe(false)
     } finally { f.cleanup() }
   })
 
@@ -1482,6 +1327,28 @@ describe('derived pair slots', () => {
     } finally { set.stop(); vi.useRealTimers(); read.mockRestore(); f.room.doc.destroy(); f.cleanup() }
   })
 
+  it.each(['A', 'B', 'A shifted'] as const)('keeps a confirmed claims conflict when %s text is temporarily unreadable before waking', async unreadable => {
+    const f = fixture(); let set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', 'inserted\nold\n'); f.entry('B', unreadable === 'A shifted' ? undefined : 'different\nold\n')
+      const a = f.room.addClaim({ by: 'A', byKind: 'agent', path: 'x', from: 2, to: 2, intent: 'old line' })
+      const b = f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: unreadable === 'A shifted' ? 1 : 2, to: unreadable === 'A shifted' ? 1 : 2, intent: 'old line' })
+      set = new ConflictSet(f.session('A')); vi.spyOn(set as unknown as { budget(): Promise<void> }, 'budget').mockResolvedValue()
+      await set.reconcile('confirmed claims')
+      const key = slotKey('A', 'claims', 'B', 'x', a.id + '\0' + b.id)
+      const before = new ConflictSlots(f.room, '1').get(key)!
+      expect(before).toMatchObject({ status: 'conflict', settled: 'conflict' })
+      const target = set as unknown as { read(snap: { name: string }, path: string): Promise<unknown> }
+      const original = target.read.bind(target)
+      const read = vi.spyOn(target, 'read').mockImplementation(async (snap, path) => snap.name === unreadable.split(' ')[0] ? { kind: 'unknown', why: 'fetch' } : original(snap, path))
+      await set.reconcile('transient read failure')
+      expect(new ConflictSlots(f.room, '1').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict', openId: before.openId, factId: before.factId, confirmedAt: before.confirmedAt })
+      expect(openConflicts(f.room, 'A').find(entry => entry.kind === 'claims')?.priority).toBe('notify')
+      read.mockRestore(); await set.reconcile('readable again')
+      expect(new ConflictSlots(f.room, '1').get(key)?.status).toBe('conflict')
+    } finally { set?.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
   it('maps two claims through different file texts before testing overlap', async () => {
     const f = fixture()
     try {
@@ -1513,7 +1380,7 @@ describe('derived pair slots', () => {
     // Keep these transition tests focused on notice identity rather than the merge rate limiter.
     vi.spyOn(set as unknown as { budget(): Promise<void> }, 'budget').mockResolvedValue()
     const claim = () => f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 8, intent: 'rewrite x' })
-    const notices = (to = 'A') => [...new Map(f.post.mock.calls.filter(c => c[1].type === 'conflict' && c[1].to === to).map(c => [c[2].id, { ...c[1], id: c[2].id }])).values()]
+    const notices = (to = 'A') => openConflicts(f.room, to).filter(entry => entry.kind === 'edit-in-claim').map(entry => ({ ...entry, merges: entry.slots[0]!.merges }))
     return { ...f, set, claim, notices, pass: () => set.reconcile('overlap regression'), close: () => { set.stop(); f.room.doc.destroy(); f.cleanup() } }
   }
 
@@ -1529,7 +1396,7 @@ describe('derived pair slots', () => {
       f.room.removeClaim(first.id); f.room.removeClaim(duplicate.id); f.claim()
       await f.pass()
       for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(1)
-      expect(f.notices()[0]).toMatchObject({ priority: 'notify', merges: 'clean' })
+      expect(f.notices()[0]).toMatchObject({ priority: 'fyi', merges: 'clean' })
       if (committed) expect(f.notices()[0].text).toMatch(/earlier change to x \([0-9a-f]{7}\)/)
     } finally { f.close() }
   })
@@ -1538,26 +1405,74 @@ describe('derived pair slots', () => {
     const f = overlapFixture(false, worker)
     try {
       f.claim(); await f.pass()
+      expect(f.notices()[0]).toMatchObject({ priority: 'fyi', merges: 'clean' })
       f.entry('B', 'a\nX\nc\nd\ne\nf\ng\nh\n'); await f.pass()
+      expect(f.notices()[0]).toMatchObject({ priority: worker ? 'notify' : 'interrupt', merges: undefined })
+      const firstConflictFact = f.notices()[0]!.slots[0]!.factId
       f.entry('B', 'a\nX\nc\nd\ne\nY\ng\nh\n'); await f.pass()
+      expect(f.notices()[0]).toMatchObject({ priority: worker ? 'notify' : 'interrupt', merges: undefined })
+      expect(f.notices()[0]!.slots[0]!.factId).not.toBe(firstConflictFact)
       f.entry('B', 'a\nb\nc\nd\ne\nf\ng\nH\n'); await f.pass()
-      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(4)
-      expect(f.notices().map(n => n.priority)).toEqual(['notify', worker ? 'notify' : 'interrupt', worker ? 'notify' : 'interrupt', 'notify'])
-      expect(f.notices().map(n => n.merges)).toEqual(['clean', undefined, undefined, 'clean'])
+      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(1)
+      expect(f.notices()[0]).toMatchObject({ priority: 'fyi', merges: 'clean' })
     } finally { f.close() }
   })
+
 
   it('notifies again after a cleared overlap followed by a new overlap', async () => {
     const f = overlapFixture()
     try {
       const first = f.claim(); await f.pass()
+      const opening = f.notices()[0]!.id
+      expect(f.notices()).toHaveLength(1)
       f.room.removeClaim(first.id); await f.pass()
+      expect(f.notices()).toEqual([])
       f.claim(); await f.pass()
+      expect(f.notices()[0]!.id).not.toBe(opening)
+      const next = f.notices()[0]!.id
       await f.pass()
-      expect(f.notices()).toHaveLength(3)
-      expect(f.notices().map(n => n.priority)).toEqual(['notify', 'fyi', 'notify'])
-      expect(f.notices()[1].clearedFrom).toBe('conflict')
-      expect(f.notices('B')).toHaveLength(2)
+      expect(f.notices().map(n => n.id)).toEqual([next])
+      expect(f.notices('B')).toHaveLength(1)
+    } finally { f.close() }
+  })
+  it('keeps aggregate possible overlap episodes distinct across exact evidence and clears after the last claim', async () => {
+    const f = overlapFixture()
+    try {
+      const first = f.claim(), second = f.claim()
+      f.entry('B', undefined, true); await f.pass()
+      expect(f.notices()).toHaveLength(1)
+      const possible = f.notices()[0]!.id
+      expect(f.notices()[0]!.slots[0]).toMatchObject({ settled: 'possible' })
+      f.room.removeClaim(first.id); await f.pass()
+      expect(f.notices().map(n => n.id)).toEqual([possible])
+      f.entry('B', 'a\nb\nc\nd\ne\nf\ng\nH\n'); await f.pass()
+      expect(f.notices()).toHaveLength(1)
+      expect(f.notices()[0]).toMatchObject({ priority: 'fyi', merges: 'clean', slots: [expect.objectContaining({ settled: 'conflict' })] })
+      f.entry('B', undefined, true); await f.pass()
+      expect(f.notices()[0]!.id).not.toBe(possible)
+      const reopened = f.notices()[0]!.id
+      await f.pass()
+      expect(f.notices().map(n => n.id)).toEqual([reopened])
+      f.room.removeClaim(second.id); await f.pass()
+      expect(f.notices()).toEqual([])
+    } finally { f.close() }
+  })
+  it('preserves overlap identity through unreadable evidence and a reconciler restart, but reports a new revision', async () => {
+    const f = overlapFixture()
+    try {
+      f.claim(); await f.pass()
+      const first = f.notices()[0]!
+      f.entry('A', undefined, true); await f.pass()
+      expect(f.notices()[0]).toMatchObject({ id: first.id, slots: [expect.objectContaining({ status: 'unknown', settled: 'conflict' })] })
+      f.entry('A', 'a\nB\nc\nd\ne\nF\ng\nh\n'); await f.pass()
+      const restarted = new ConflictSet(f.session('A'))
+      try { await restarted.reconcile('restart') } finally { restarted.stop() }
+      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(1)
+      expect(f.notices()[0]?.id).toBe(first.id)
+      const fact = f.notices()[0]!.slots[0]!.factId
+      f.entry('A', 'a\nB2\nc\nd\ne\nF\ng\nh\n'); await f.pass()
+      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(1)
+      expect(f.notices()[0]!.slots[0]!.factId).not.toBe(fact)
     } finally { f.close() }
   })
 
@@ -1567,45 +1482,8 @@ describe('derived pair slots', () => {
       f.claim(); await f.pass()
       f.entry('B', 'a\nX\nc\nd\ne\nf\ng\nh\n'); await f.pass()
       f.entry('B', 'a\nX revised\nc\nd\ne\nf\ng\nh\n'); await f.pass()
-      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(2)
-    } finally { f.close() }
-  })
-
-  it('keeps aggregate possible overlap episodes distinct across exact evidence and clears after the last claim', async () => {
-    const f = overlapFixture()
-    try {
-      const first = f.claim(), second = f.claim()
-      f.entry('B', undefined, true); await f.pass()
-      expect(f.notices()).toHaveLength(1)
-      expect(f.notices()[0]).toMatchObject({ priority: 'fyi', id: expect.stringMatching(/:possible$/) })
-      const firstId = f.notices()[0].id
-      f.room.removeClaim(first.id); await f.pass()
-      expect(f.notices()).toHaveLength(1)
-      f.entry('B', 'a\nb\nc\nd\ne\nf\ng\nH\n'); await f.pass()
-      expect(f.notices()[1]).toMatchObject({ priority: 'notify', merges: 'clean' })
-      f.entry('B', undefined, true); await f.pass()
-      const secondId = f.notices()[2].id
-      expect(secondId).toMatch(/:possible$/)
-      expect(secondId).not.toBe(firstId)
-      await f.pass()
-      expect(f.notices()).toHaveLength(3)
-      f.room.removeClaim(second.id); await f.pass()
-      expect(f.notices()).toHaveLength(4)
-      expect(f.notices()[3]).toMatchObject({ priority: 'fyi', clearedFrom: 'possible' })
-    } finally { f.close() }
-  })
-
-  it('preserves overlap identity through unreadable evidence and a reconciler restart, but reports a new revision', async () => {
-    const f = overlapFixture()
-    try {
-      f.claim(); await f.pass()
-      f.entry('A', undefined, true); await f.pass()
-      f.entry('A', 'a\nB\nc\nd\ne\nF\ng\nh\n'); await f.pass()
-      const restarted = new ConflictSet(f.session('A'))
-      try { await restarted.reconcile('restart') } finally { restarted.stop() }
       for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(1)
-      f.entry('A', 'a\nB2\nc\nd\ne\nF\ng\nh\n'); await f.pass()
-      for (const to of ['A', 'B']) expect(f.notices(to)).toHaveLength(2)
+      expect(f.notices()[0]!.merges).toBeUndefined()
     } finally { f.close() }
   })
 
@@ -1613,18 +1491,20 @@ describe('derived pair slots', () => {
     const f = overlapFixture()
     try {
       const first = f.claim(), second = f.claim()
-      const slots = new ConflictSlots(f.room, f.post, '1')
+      const slots = new ConflictSlots(f.room, '1')
       for (const claim of [first, second]) await slots.settle(slotKey('A', 'edit-in-claim', 'B', 'x', claim.id), {
         owner: 'A', other: 'B', kind: 'edit-in-claim', path: 'x', subject: claim.id,
         status: 'conflict', inputs: claim.id, factId: 'legacy fact', merges: 'clean',
       })
+      const priorOpenings = slots.owned('A').map(([, slot]) => slot.openId)
       f.post.mockClear()
       f.entry('A', undefined, true); await f.pass()
       const remaining = slots.owned('A').filter(([, s]) => s.kind === 'edit-in-claim')
       expect(remaining).toHaveLength(1)
-      expect(remaining[0][1]).toMatchObject({ status: 'unknown', settled: 'conflict', merges: 'clean', epoch: 1 })
+      expect(remaining[0]![1]).toMatchObject({ status: 'unknown', settled: 'conflict', merges: 'clean' })
+      expect(priorOpenings).toContain(remaining[0]![1].openId)
       f.entry('A', 'a\nB\nc\nd\ne\nF\ng\nh\n'); await f.pass()
-      expect(f.notices().some(n => n.clearedFrom)).toBe(false)
+      expect(f.notices()).toHaveLength(1)
       const ids = f.notices().map(n => n.id)
       f.room.removeClaim(first.id); f.room.removeClaim(second.id); f.claim(); await f.pass()
       expect(f.notices().map(n => n.id)).toEqual(ids)
@@ -1643,25 +1523,16 @@ describe('derived pair slots', () => {
       const claim = f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 4, intent: 'rewrite x' })
       const set = new ConflictSet(f.session('A'))
       await set.reconcile('edit in claim')
-      // The end-of-reconcile replay re-posts under the same id; the hub keeps one.
-      const lines = () => [...new Map(f.post.mock.calls.filter(c => c[1].type === 'conflict').map(c => [c[2].id, c[1]])).values()]
-        .map(body => ({ to: body.to, line: formatMsg({ id: 'm', from: 'room', fromKind: 'bot', at: 1, ...body } as any) }))
+      const lines = () => openConflicts(f.room).filter(entry => entry.kind === 'edit-in-claim').map(entry => ({ to: entry.owner, line: formatConflictLine(entry) }))
       const notices = lines()
       expect(notices.map(n => n.to).sort()).toEqual(['A', 'B'])
       for (const { line } of notices) {
-        if (conflicts) {
-          expect(line).toMatch(/CONFLICT on x: /)
-          expect(line).not.toContain('merges cleanly')
-        } else {
-          expect(line).not.toContain('CONFLICT')
-          expect(line).toMatch(/overlap on x: .*; merges cleanly$/)
-        }
+        expect(line).toContain(conflicts ? 'CONFLICT:' : 'overlap:')
+        expect(line.includes('merges cleanly')).toBe(!conflicts)
       }
       f.room.removeClaim(claim.id)
       await set.reconcile('released')
-      const cleared = lines().slice(notices.length)
-      expect(cleared).toHaveLength(1)
-      expect(cleared[0]!.line).toContain(conflicts ? 'CONFLICT cleared on x: the conflict with B cleared' : 'overlap cleared on x: the overlap with B cleared')
+      expect(lines()).toHaveLength(0)
     } finally { f.cleanup() }
   })
 
@@ -1698,7 +1569,7 @@ describe('derived pair slots', () => {
       } })
     const session = f.session('A'); session.graph = graph
     const set = new ConflictSet(session, 'A', session, () => {}, 0, () => undefined)
-    const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+    const key = slotKey('A', 'contract', 'B', 'api.py', 'call'), evaluated = recordEvaluations(set)
     try {
       graph.start(); await reading; await graph.refresh('api.py')
       await set.reconcile('partial local graph')
@@ -1712,37 +1583,9 @@ describe('derived pair slots', () => {
       const revision = graph.resolutionRevision
       await graph.refresh('other_api.py')
       expect(graph.resolutionRevision).toBe(revision)
-      expect(f.room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'clean' })
-    } finally { release(); set.stop(); graph.stop(); f.room.doc.destroy(); f.cleanup() }
-  })
-
-  it('notifies again when a conflicting contract changes signature a second time', async () => {
-    const f = fixture()
-    try {
-      f.holder('A'); f.holder('B')
-      f.entry('A', 'call()\n')
-      f.entry('B', undefined)
-      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
-      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash('from api import call\ncall()\n'), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', 'from api import call\ncall()\n')
-      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash('def call(a, b):\n    pass\n'), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('B', '1'), 'api.py', 'def call(a, b):\n    pass\n')
-      const graph = (detail: string) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready' as const,
-        paths: ['consumer.py', 'api.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
-        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail }], truncated: false })
-      f.room.graphs.set('B', graph('call(a) → call(a, b)'))
-      await new ConflictSet(f.session('A')).reconcile('graph')
-      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      expect(f.room.doc.getMap<{ epoch: number }>('conflicts').get(key)?.epoch).toBe(1)
-      const firstId = contractNoticeId(f.room, key)
-      f.room.graphs.set('B', graph('call(a) → call(a, b, c)'))
-      await new ConflictSet(f.session('A')).reconcile('graph')
-      expect(f.room.doc.getMap<{ epoch: number }>('conflicts').get(key)?.epoch).toBe(2)
-      const secondId = contractNoticeId(f.room, key, 2)
-      expect(secondId).not.toBe(firstId)
-      expect(secondId.split(':').at(-1)).toBe(firstId.split(':').at(-1))
-      expect(f.post.mock.calls.map(call => call[2].id)).toContain(secondId)
-    } finally { f.cleanup() }
+      expect(f.room.doc.getMap('conflicts').has(key)).toBe(false)
+      expect(evaluated.results.filter(result => result.kind === 'contract' && result.path === 'api.py').at(-1)).toMatchObject({ status: 'clean' })
+    } finally { release(); evaluated.stop(); set.stop(); graph.stop(); f.room.doc.destroy(); f.cleanup() }
   })
 
   it('publishes no outside-area contract evidence and silently withdraws a path that leaves the area', async () => {
@@ -1794,7 +1637,6 @@ describe('derived pair slots', () => {
       })
       expect(f.room.doc.getMap('conflicts').has(key)).toBe(false)
       expect(JSON.stringify(f.room.graphs.get('B'))).not.toContain('public_call')
-      expect(f.post.mock.calls.filter(call => call[1]?.type === 'contract')).toHaveLength(notices)
     } finally { set?.stop(); graph?.stop(); f.cleanup() }
   })
 
@@ -1823,8 +1665,7 @@ describe('derived pair slots', () => {
       })
       set = new ConflictSet(f.session('A', post)); set.start(); await set.reconcile('initial conflict')
       const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect([...accepted.values()].filter((body: any) => body.type === 'contract')).toHaveLength(1)
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict' })
 
       f.room.doc.transact(() => {
         entries.set('api.py', { change: 'M', state: 'held', held: 'scope', at: 2, fence: '1' })
@@ -1833,7 +1674,6 @@ describe('derived pair slots', () => {
       })
       expect(f.room.doc.getMap('conflicts').has(key)).toBe(false)
       await graph.whenIdle(); await set.reconcile('withdrawn')
-      expect([...accepted.values()].filter((body: any) => body.type === 'contract')).toHaveLength(1)
 
       writeFileSync(join(f.dir, 'api.py'), returned)
       f.room.doc.transact(() => {
@@ -1846,11 +1686,9 @@ describe('derived pair slots', () => {
       // reconcile() bounds work per turn; an in-flight stale pass can leave a
       // coalesced follow-up scheduled. Observe delivery, not one pass's return.
       await vi.waitFor(() => {
-        expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-        expect([...accepted.values()].filter((body: any) => body.type === 'contract')).toHaveLength(2)
+        expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict',
+          why: expect.stringContaining(variant === 'same' ? 'call(a, b)' : 'call(a, b, c)') })
       }, { timeout: 10_000 })
-      expect(new Set(post.mock.calls.filter(call => call[1]?.type === 'contract').map(call => call[2].id)).size).toBe(2)
-      if (variant === 'changed') expect([...accepted.values()].at(-1)).toMatchObject({ text: expect.stringContaining('call(a, b, c)') })
     } finally { set?.stop(); graph?.stop(); f.cleanup() }
   })
 
@@ -1884,13 +1722,11 @@ describe('derived pair slots', () => {
       fresh.doc.destroy()
       set = new ConflictSet(f.session('A')); set.start(); await set.reconcile('authorized contract')
       const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict' })
       const ids = f.post.mock.calls.filter(call => call[1]?.type === 'contract' && call[1]?.path === 'api.py').map(call => call[2].id)
-      expect(new Set(ids).size).toBe(1)
-      expect(ids[0]).toBe(noticeId(key, 1, f.room.doc.getMap<any>('conflicts').get(key).episode))
       const reader = new RoomDoc()
       Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
-      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict' })
       reader.doc.destroy()
     } finally { set?.stop(); graph?.stop(); f.cleanup() }
   })
@@ -1959,299 +1795,7 @@ describe('derived pair slots', () => {
         f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'declared', textPrefixes: [], rev: 2, semRev: 2 })
       })
       expect(f.room.doc.getMap('conflicts').has(key)).toBe(false)
-      expect(f.post.mock.calls.filter(call => call[1]?.type === 'contract')).toHaveLength(notices)
     } finally { set?.stop(); f.cleanup() }
-  })
-
-  it('keeps one accepted contract notice across a graph revision lag and MCP restart', async () => {
-    const f = fixture()
-    let restarted: RoomDoc | undefined
-    try {
-      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
-      const consumer = 'from api import call\ncall(1)\n', provider = 'def call(a, b):\n    pass\n'
-      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
-      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
-      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
-      const graph = (rev: number) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: rev, at: rev, status: 'ready' as const,
-        paths: ['api.py', 'consumer.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
-        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail: 'call(a) → call(a, b)' }], truncated: false })
-      f.room.graphs.set('B', graph(1))
-      const accepted: string[] = [], seen = new Set<string>()
-      f.post.mockImplementation(async (_from, _body, opts) => {
-        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
-        return { ok: true }
-      })
-      const set = new ConflictSet(f.session('A'))
-      set.start()
-      await set.reconcile('first')
-      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      const firstId = contractNoticeId(f.room, key)
-      expect(accepted.filter(id => id.startsWith('cf:'))).toContain(firstId)
-      const head = f.room.manifestHead.get('B')!
-      f.room.manifestHead.set('B', { ...head, rev: 2, semRev: 2 })
-      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1 })
-      set.stop()
-      restarted = new RoomDoc()
-      Y.applyUpdate(restarted.doc, Y.encodeStateAsUpdate(f.room.doc))
-      const resumed = new ConflictSet({ ...f.session('A'), room: restarted } as Session)
-      await resumed.reconcile('still stale after restart')
-      expect(restarted.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict', epoch: 1 })
-      restarted.graphs.set('B', graph(2))
-      await resumed.reconcile('provenance caught up after restart')
-      expect(restarted.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(accepted.filter(id => id.startsWith('cf:'))).toEqual([firstId])
-    } finally { restarted?.doc.destroy(); f.cleanup() }
-  })
-
-  it('keeps one contract episode through README-only provenance catch-up in the running graph pipeline', async () => {
-    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
-    let graph: GraphIndex | undefined, set: ConflictSet | undefined
-    try {
-      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
-      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
-      const consumer = 'from api import call\ncall(1)\n', provider = 'def call(a, b):\n    pass\n'
-      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
-      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
-      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'M', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
-      writeFileSync(join(f.dir, 'api.py'), provider)
-      const accepted: string[] = [], seen = new Set<string>()
-      f.post.mockImplementation(async (_from, _body, opts) => {
-        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
-        return { ok: true }
-      })
-      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
-      graph.start()
-      await graph.whenIdle()
-      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      const ready = async () => {
-        const deadline = Date.now() + 3000
-        while (f.room.graphs.get('B')?.sourceRev !== f.room.manifestHead.get('B')?.rev || f.room.graphs.get('B')?.status !== 'ready') {
-          if (Date.now() >= deadline) throw new Error('graph provenance did not catch up')
-          await new Promise(resolve => setTimeout(resolve, 10))
-        }
-      }
-      await ready()
-      set = new ConflictSet(f.session('A'))
-      set.start()
-      await set.reconcile('first graph')
-      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      const head = f.room.manifestHead.get('B')!
-      writeFileSync(join(f.dir, 'README.md'), 'docs\n')
-      f.room.doc.transact(() => {
-        f.room.manifest.get(manifestKey('B', '1'))!.set('README.md', { change: 'A', state: 'shared', hash: gitBlobHash('docs\n'), at: 2, fence: '1' })
-        f.room.setOverlay(manifestKey('B', '1'), 'README.md', 'docs\n')
-        f.room.manifestHead.set('B', { ...head, rev: 2, semRev: 2 })
-      })
-      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', epoch: 1 })
-      await graph.whenIdle()
-      await ready()
-      await set.reconcile('graph caught up')
-      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(accepted.filter(id => id.startsWith('cf:'))).toEqual([contractNoticeId(f.room, key)])
-    } finally { set?.stop(); graph?.stop(); f.cleanup() }
-  })
-
-  it('notifies a consumer of an authorized whole-file deletion from the running graph', async () => {
-    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
-    let graph: GraphIndex | undefined, reader: RoomDoc | undefined
-    try {
-      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
-      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
-      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
-      const consumer = 'from api import call\ncall(1)\n'
-      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
-      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
-      graph.start(); await graph.whenIdle()
-      const ready = async (rev: number) => {
-        const deadline = Date.now() + 3000
-        while (f.room.graphs.get('B')?.status !== 'ready' || f.room.graphs.get('B')?.sourceRev !== rev) {
-          if (Date.now() >= deadline) throw new Error('graph did not publish deletion revision')
-          await new Promise(resolve => setTimeout(resolve, 10))
-        }
-      }
-      await ready(1)
-      expect(f.room.graphs.get('B')?.edges).toContainEqual(expect.objectContaining({ source: 'api.py', target: 'consumer.py' }))
-      rmSync(join(f.dir, 'api.py'))
-      f.room.doc.transact(() => {
-        f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'D', state: 'shared', at: 2, fence: '1' })
-        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
-      })
-      await graph.whenIdle(); await ready(2)
-      reader = new RoomDoc()
-      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
-      expect(reader.graphs.get('B')?.observed).toContainEqual(expect.objectContaining({ path: 'api.py', symbol: 'call', kind: 'delete' }))
-      await new ConflictSet({ ...f.session('A'), room: reader } as Session).reconcile('deleted provider')
-      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'contract', to: 'A' }), expect.objectContaining({ id: contractNoticeId(reader, key) }))
-    } finally { graph?.stop(); reader?.doc.destroy(); f.cleanup() }
-  })
-
-  it('clears a deletion contract after the consumer actually removes its last reference', async () => {
-    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
-    let graph: GraphIndex | undefined, reader: RoomDoc | undefined, set: ConflictSet | undefined
-    try {
-      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
-      const consumer = 'from api import call\ncall(1)\n'
-      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
-      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
-      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
-      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
-      graph.start(); await graph.whenIdle()
-      await waitForGraph(f.room, 'B', 1)
-      rmSync(join(f.dir, 'api.py'))
-      f.room.doc.transact(() => {
-        f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'D', state: 'shared', at: 2, fence: '1' })
-        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
-      })
-      await graph.whenIdle()
-      await waitForGraph(f.room, 'B', 2)
-      reader = new RoomDoc()
-      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
-      set = new ConflictSet({ ...f.session('A'), room: reader } as Session)
-      set.start()
-      await set.reconcile('deleted provider')
-      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', epoch: 1 })
-      const noReference = 'print("done")\n'
-      reader.doc.transact(() => {
-        reader!.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(noReference), at: 2, fence: '1' })
-        reader!.setOverlay(manifestKey('A', '1'), 'consumer.py', noReference)
-        reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, rev: 2, semRev: 2 })
-      })
-      await set.reconcile('last reference removed')
-      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'clean', settled: 'clean', epoch: 1 })
-      expect(f.post).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ type: 'contract', to: 'A' }),
-        expect.objectContaining({ id: `${contractNoticeId(reader, key)}:clean` }))
-    } finally { set?.stop(); graph?.stop(); reader?.doc.destroy(); f.cleanup() }
-  })
-
-  it('keeps an active contract episode when a clean sibling has no manifest entry, including after restart', async () => {
-    const baseApi = 'def call(a):\n    pass\n', baseAux = 'def other(a):\n    pass\n'
-    const f = fixture({ 'api.py': baseApi, 'aux.py': baseAux })
-    let restarted: RoomDoc | undefined, set: ConflictSet | undefined
-    try {
-      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
-      const consumer = 'from api import call\nfrom aux import other\ncall(1)\nother(1)\n'
-      const api = 'def call(a, b):\n    pass\n', aux = 'def other(a, b):\n    pass\n'
-      const entries = f.room.manifest.get(manifestKey('B', '1'))!
-      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
-      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
-      for (const [path, value] of [['api.py', api], ['aux.py', aux]] as const) {
-        entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(value), at: 1, fence: '1' })
-        f.room.setOverlay(manifestKey('B', '1'), path, value)
-      }
-      const graph = (rev: number, auxChanged: boolean) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: rev, at: rev, status: 'ready' as const,
-        paths: ['api.py', 'aux.py', 'consumer.py'],
-        edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] },
-          ...(auxChanged ? [{ source: 'aux.py', target: 'consumer.py', symbols: ['other'] }] : [])],
-        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail: 'call(a) → call(a, b)' },
-          ...(auxChanged ? [{ path: 'aux.py', symbol: 'other', kind: 'signature' as const, detail: 'other(a) → other(a, b)' }] : [])], truncated: false })
-      f.room.graphs.set('B', graph(1, true))
-      const accepted: string[] = [], seen = new Set<string>()
-      f.post.mockImplementation(async (_from, _body, opts) => {
-        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
-        return { ok: true }
-      })
-      set = new ConflictSet(f.session('A'))
-      await set.reconcile('both changed')
-      const activeKey = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      const cleanKey = slotKey('A', 'contract', 'B', 'aux.py', 'other')
-      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'conflict', epoch: 1 })
-      const activeFact = f.room.doc.getMap<any>('conflicts').get(activeKey).factId
-      f.room.doc.transact(() => {
-        entries.delete('aux.py')
-        f.room.clearOverlay(manifestKey('B', '1'), 'aux.py')
-        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
-        f.room.graphs.set('B', graph(2, false))
-      })
-      await set.reconcile('aux reverted')
-      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'clean', epoch: 1 })
-      set.start()
-      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 3, semRev: 3 })
-      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'unknown', subject: 'call', factId: activeFact, epoch: 1 })
-      set.stop()
-      restarted = new RoomDoc()
-      Y.applyUpdate(restarted.doc, Y.encodeStateAsUpdate(f.room.doc))
-      const resumed = new ConflictSet({ ...f.session('A'), room: restarted } as Session)
-      await resumed.reconcile('stale after restart')
-      restarted.graphs.set('B', graph(3, false))
-      await resumed.reconcile('current after restart')
-      expect(restarted.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(accepted.filter(id => id.startsWith(noticeId(activeKey, 1).slice(0, -1)))).toEqual([contractNoticeId(restarted, activeKey)])
-    } finally { set?.stop(); restarted?.doc.destroy(); f.cleanup() }
-  })
-
-  it('keeps an active contract episode after a sibling reverts in the running graph pipeline', async () => {
-    const baseApi = 'def call(a):\n    pass\n', baseAux = 'def other(a):\n    pass\n'
-    const f = fixture({ 'api.py': baseApi, 'aux.py': baseAux })
-    let graph: GraphIndex | undefined, set: ConflictSet | undefined
-    try {
-      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
-      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
-      const consumer = 'from api import call\nfrom aux import other\ncall(1)\nother(1)\n'
-      const api = 'def call(a, b):\n    pass\n', aux = 'def other(a, b):\n    pass\n'
-      const entries = f.room.manifest.get(manifestKey('B', '1'))!
-      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
-      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
-      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
-      for (const [path, value] of [['api.py', api], ['aux.py', aux]] as const) {
-        entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(value), at: 1, fence: '1' })
-        f.room.setOverlay(manifestKey('B', '1'), path, value)
-        writeFileSync(join(f.dir, path), value)
-      }
-      const accepted: string[] = [], seen = new Set<string>()
-      f.post.mockImplementation(async (_from, _body, opts) => {
-        if (!seen.has(opts.id)) { seen.add(opts.id); accepted.push(opts.id) }
-        return { ok: true }
-      })
-      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
-      graph.start()
-      const ready = async () => {
-        await graph!.whenIdle()
-        const deadline = Date.now() + 3000
-        while (f.room.graphs.get('B')?.sourceRev !== f.room.manifestHead.get('B')?.rev || f.room.graphs.get('B')?.status !== 'ready') {
-          if (Date.now() >= deadline) throw new Error('graph provenance did not catch up')
-          await new Promise(resolve => setTimeout(resolve, 10))
-        }
-      }
-      await ready()
-      set = new ConflictSet(f.session('A'))
-      await set.reconcile('both changed')
-      const activeKey = slotKey('A', 'contract', 'B', 'api.py', 'call')
-      const cleanKey = slotKey('A', 'contract', 'B', 'aux.py', 'other')
-      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'conflict', epoch: 1 })
-      writeFileSync(join(f.dir, 'aux.py'), baseAux)
-      f.room.doc.transact(() => {
-        entries.delete('aux.py')
-        f.room.clearOverlay(manifestKey('B', '1'), 'aux.py')
-        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
-      })
-      await ready()
-      await set.reconcile('aux reverted')
-      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'clean', epoch: 1 })
-      set.start()
-      writeFileSync(join(f.dir, 'README.md'), 'docs\n')
-      f.room.doc.transact(() => {
-        entries.set('README.md', { change: 'A', state: 'shared', hash: gitBlobHash('docs\n'), at: 3, fence: '1' })
-        f.room.setOverlay(manifestKey('B', '1'), 'README.md', 'docs\n')
-        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 3, semRev: 3 })
-      })
-      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'unknown', subject: 'call', epoch: 1 })
-      await ready()
-      await set.reconcile('README catch-up')
-      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', epoch: 1 })
-      expect(accepted.filter(id => id.startsWith(noticeId(activeKey, 1).slice(0, -1)))).toEqual([contractNoticeId(f.room, activeKey)])
-    } finally { set?.stop(); graph?.stop(); f.cleanup() }
   })
 
   it.each([
@@ -2289,7 +1833,6 @@ describe('derived pair slots', () => {
         person => person === 'W' ? { baseline, lead: 'B' } : undefined).reconcile('reverted')
       const key = slotKey('W', 'contract', 'B', 'api.py', 'call')
       expect(f.room.doc.getMap<any>('conflicts').get(key)?.status).toBe('conflict')
-      expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === 'W')).toBe(true)
     } finally { f.cleanup() }
   })
 
@@ -2305,7 +1848,6 @@ describe('derived pair slots', () => {
         observed: [{ path: 'api.py', symbol: 'call', kind: 'signature', detail: 'now secret_customer' }], truncated: false })
       await new ConflictSet(f.session('A')).reconcile('narrowed')
       expect([...f.room.doc.getMap<any>('conflicts').values()].filter(slot => slot.kind === 'contract' && slot.status === 'conflict')).toEqual([])
-      expect(f.post.mock.calls.some(call => call[1]?.type === 'contract')).toBe(false)
     } finally { f.cleanup() }
   })
 
@@ -2325,7 +1867,6 @@ describe('derived pair slots', () => {
         observed: [{ path: 'api.py', symbol: 'call', kind: 'signature', detail: 'call(a) → call(a, b)' }], truncated: false })
       await new ConflictSet(f.session('A')).reconcile('consumer changed')
       expect(f.room.doc.getMap('conflicts').get(slotKey('A', 'contract', 'B', 'api.py', 'call'))).toBeUndefined()
-      expect(f.post.mock.calls.some(call => call[1]?.type === 'contract')).toBe(false)
     } finally { f.cleanup() }
   })
 
@@ -2352,7 +1893,6 @@ describe('derived pair slots', () => {
         person => person === 'W' ? { baseline, lead: 'B' } : undefined).reconcile('carried')
       const key = slotKey('W', 'contract', 'B', 'api.py', 'call')
       expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('conflict')
-      expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === 'W')).toBe(true)
       expect(parseEngine.languageLoadAttemptsForTest('python')).toBe(0)
     } finally { f.cleanup() }
   })
@@ -2402,7 +1942,6 @@ describe('derived pair slots', () => {
         armed = false
         await set.reconcile('carried source at rest')
         expect(f.room.doc.getMap<{ status: string }>('conflicts').get(key)?.status).toBe('conflict')
-        expect(f.post.mock.calls.some(c => c[1]?.type === 'contract' && c[1]?.to === W)).toBe(true)
       } finally { set.stop() }
     } finally { try { await Promise.all(pendingWrites) } finally { f.cleanup() } }
   })
@@ -2423,7 +1962,6 @@ describe('derived pair slots', () => {
       const slot = f.room.doc.getMap('conflicts').get(slotKey('W', 'contract', 'B', path, '*'))
       if (path.endsWith('.md')) { expect(slot).toBeUndefined(); expect(parse).not.toHaveBeenCalled() }
       else expect(slot).toMatchObject({ status: 'unknown', why: expect.stringContaining('parser') })
-      expect(f.post.mock.calls.some(call => call[1]?.type === 'contract')).toBe(false)
     } finally { parse.mockRestore(); f.cleanup() }
   })
 
@@ -2440,7 +1978,6 @@ describe('derived pair slots', () => {
         person => person === 'W' ? { baseline, lead: 'B' } : undefined)
       await checker.reconcile('carried'); await checker.reconcile('cached analysis')
       expect(f.room.doc.getMap('conflicts').get(slotKey('W', 'contract', 'B', path, '*'))).toMatchObject({ status: 'unknown', why: expect.stringContaining('256') })
-      expect(f.post.mock.calls.some(call => call[1]?.type === 'contract')).toBe(false)
     } finally { f.cleanup() }
   })
 
@@ -2512,6 +2049,382 @@ describe('derived pair slots', () => {
       expect(degraded[0][2].id).toBe(degraded[1][2].id)
     } finally { f.cleanup() }
   })
+
+  it('keeps one accepted contract notice across a graph revision lag and MCP restart', async () => {
+    const f = fixture()
+    let restarted: RoomDoc | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n', provider = 'def call(a, b):\n    pass\n'
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+      const graph = (rev: number) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: rev, at: rev, status: 'ready' as const,
+        paths: ['api.py', 'consumer.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail: 'call(a) → call(a, b)' }], truncated: false })
+      f.room.graphs.set('B', graph(1))
+      const set = new ConflictSet(f.session('A'))
+      set.start()
+      await set.reconcile('first')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      const firstOpening = f.room.doc.getMap<any>('conflicts').get(key).openId
+      expect(firstOpening).toEqual(expect.any(String))
+      const head = f.room.manifestHead.get('B')!
+      f.room.manifestHead.set('B', { ...head, rev: 2, semRev: 2 })
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict' })
+      set.stop()
+      restarted = new RoomDoc()
+      Y.applyUpdate(restarted.doc, Y.encodeStateAsUpdate(f.room.doc))
+      const resumed = new ConflictSet({ ...f.session('A'), room: restarted } as Session)
+      await resumed.reconcile('still stale after restart')
+      expect(restarted.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown', settled: 'conflict' })
+      restarted.graphs.set('B', graph(2))
+      await resumed.reconcile('provenance caught up after restart')
+      expect(restarted.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict' })
+      expect(restarted.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', openId: firstOpening })
+    } finally { restarted?.doc.destroy(); f.cleanup() }
+  })
+
+  it('keeps one contract episode through README-only provenance catch-up in the running graph pipeline', async () => {
+    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
+    let graph: GraphIndex | undefined, set: ConflictSet | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
+      const consumer = 'from api import call\ncall(1)\n', provider = 'def call(a, b):\n    pass\n'
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'M', state: 'shared', hash: gitBlobHash(provider), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', provider)
+      writeFileSync(join(f.dir, 'api.py'), provider)
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start()
+      await graph.whenIdle()
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      const ready = async () => {
+        const deadline = Date.now() + 3000
+        while (f.room.graphs.get('B')?.sourceRev !== f.room.manifestHead.get('B')?.rev || f.room.graphs.get('B')?.status !== 'ready') {
+          if (Date.now() >= deadline) throw new Error('graph provenance did not catch up')
+          await new Promise(resolve => setTimeout(resolve, 10))
+        }
+      }
+      await ready()
+      set = new ConflictSet(f.session('A'))
+      set.start()
+      await set.reconcile('first graph')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict' })
+      const firstOpening = f.room.doc.getMap<any>('conflicts').get(key).openId
+      expect(firstOpening).toEqual(expect.any(String))
+      const head = f.room.manifestHead.get('B')!
+      writeFileSync(join(f.dir, 'README.md'), 'docs\n')
+      f.room.doc.transact(() => {
+        f.room.manifest.get(manifestKey('B', '1'))!.set('README.md', { change: 'A', state: 'shared', hash: gitBlobHash('docs\n'), at: 2, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), 'README.md', 'docs\n')
+        f.room.manifestHead.set('B', { ...head, rev: 2, semRev: 2 })
+      })
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'unknown' })
+      await graph.whenIdle()
+      await ready()
+      await set.reconcile('graph caught up')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict' })
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict', openId: firstOpening })
+    } finally { set?.stop(); graph?.stop(); f.cleanup() }
+  })
+
+  it('keeps an active contract episode when a clean sibling has no manifest entry, including after restart', async () => {
+    const baseApi = 'def call(a):\n    pass\n', baseAux = 'def other(a):\n    pass\n'
+    const f = fixture({ 'api.py': baseApi, 'aux.py': baseAux })
+    let restarted: RoomDoc | undefined, set: ConflictSet | undefined
+    let evaluated: ReturnType<typeof recordEvaluations> | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\nfrom aux import other\ncall(1)\nother(1)\n'
+      const api = 'def call(a, b):\n    pass\n', aux = 'def other(a, b):\n    pass\n'
+      const entries = f.room.manifest.get(manifestKey('B', '1'))!
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      for (const [path, value] of [['api.py', api], ['aux.py', aux]] as const) {
+        entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(value), at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), path, value)
+      }
+      const graph = (rev: number, auxChanged: boolean) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: rev, at: rev, status: 'ready' as const,
+        paths: ['api.py', 'aux.py', 'consumer.py'],
+        edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] },
+          ...(auxChanged ? [{ source: 'aux.py', target: 'consumer.py', symbols: ['other'] }] : [])],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail: 'call(a) → call(a, b)' },
+          ...(auxChanged ? [{ path: 'aux.py', symbol: 'other', kind: 'signature' as const, detail: 'other(a) → other(a, b)' }] : [])], truncated: false })
+      f.room.graphs.set('B', graph(1, true))
+      set = new ConflictSet(f.session('A')); evaluated = recordEvaluations(set)
+      await set.reconcile('both changed')
+      const activeKey = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      const cleanKey = slotKey('A', 'contract', 'B', 'aux.py', 'other')
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict' })
+      const firstOpening = f.room.doc.getMap<any>('conflicts').get(activeKey).openId
+      expect(firstOpening).toEqual(expect.any(String))
+      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'conflict' })
+      const activeFact = f.room.doc.getMap<any>('conflicts').get(activeKey).factId
+      f.room.doc.transact(() => {
+        entries.delete('aux.py')
+        f.room.clearOverlay(manifestKey('B', '1'), 'aux.py')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+        f.room.graphs.set('B', graph(2, false))
+      })
+      await set.reconcile('aux reverted')
+      expect(f.room.doc.getMap('conflicts').has(cleanKey)).toBe(false)
+      expect(evaluated.results.filter(result => result.kind === 'contract' && result.path === 'aux.py').at(-1)).toMatchObject({ status: 'clean' })
+      set.start()
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 3, semRev: 3 })
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'unknown', subject: 'call', factId: activeFact })
+      set.stop()
+      restarted = new RoomDoc()
+      Y.applyUpdate(restarted.doc, Y.encodeStateAsUpdate(f.room.doc))
+      const resumed = new ConflictSet({ ...f.session('A'), room: restarted } as Session)
+      await resumed.reconcile('stale after restart')
+      restarted.graphs.set('B', graph(3, false))
+      await resumed.reconcile('current after restart')
+      expect(restarted.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict' })
+      expect(restarted.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', openId: firstOpening })
+    } finally { evaluated?.stop(); set?.stop(); restarted?.doc.destroy(); f.cleanup() }
+  })
+
+  it('keeps an active contract episode after a sibling reverts in the running graph pipeline', async () => {
+    const baseApi = 'def call(a):\n    pass\n', baseAux = 'def other(a):\n    pass\n'
+    const f = fixture({ 'api.py': baseApi, 'aux.py': baseAux })
+    let graph: GraphIndex | undefined, set: ConflictSet | undefined
+    let evaluated: ReturnType<typeof recordEvaluations> | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
+      const consumer = 'from api import call\nfrom aux import other\ncall(1)\nother(1)\n'
+      const api = 'def call(a, b):\n    pass\n', aux = 'def other(a, b):\n    pass\n'
+      const entries = f.room.manifest.get(manifestKey('B', '1'))!
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      for (const [path, value] of [['api.py', api], ['aux.py', aux]] as const) {
+        entries.set(path, { change: 'M', state: 'shared', hash: gitBlobHash(value), at: 1, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), path, value)
+        writeFileSync(join(f.dir, path), value)
+      }
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start()
+      const ready = async () => {
+        await graph!.whenIdle()
+        const deadline = Date.now() + 3000
+        while (f.room.graphs.get('B')?.sourceRev !== f.room.manifestHead.get('B')?.rev || f.room.graphs.get('B')?.status !== 'ready') {
+          if (Date.now() >= deadline) throw new Error('graph provenance did not catch up')
+          await new Promise(resolve => setTimeout(resolve, 10))
+        }
+      }
+      await ready()
+      set = new ConflictSet(f.session('A')); evaluated = recordEvaluations(set)
+      await set.reconcile('both changed')
+      const activeKey = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      const cleanKey = slotKey('A', 'contract', 'B', 'aux.py', 'other')
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict' })
+      const firstOpening = f.room.doc.getMap<any>('conflicts').get(activeKey).openId
+      expect(firstOpening).toEqual(expect.any(String))
+      expect(f.room.doc.getMap<any>('conflicts').get(cleanKey)).toMatchObject({ status: 'conflict' })
+      writeFileSync(join(f.dir, 'aux.py'), baseAux)
+      f.room.doc.transact(() => {
+        entries.delete('aux.py')
+        f.room.clearOverlay(manifestKey('B', '1'), 'aux.py')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+      })
+      await ready()
+      await set.reconcile('aux reverted')
+      expect(f.room.doc.getMap('conflicts').has(cleanKey)).toBe(false)
+      expect(evaluated.results.filter(result => result.kind === 'contract' && result.path === 'aux.py').at(-1)).toMatchObject({ status: 'clean' })
+      set.start()
+      writeFileSync(join(f.dir, 'README.md'), 'docs\n')
+      f.room.doc.transact(() => {
+        entries.set('README.md', { change: 'A', state: 'shared', hash: gitBlobHash('docs\n'), at: 3, fence: '1' })
+        f.room.setOverlay(manifestKey('B', '1'), 'README.md', 'docs\n')
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 3, semRev: 3 })
+      })
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'unknown', subject: 'call' })
+      await ready()
+      await set.reconcile('README catch-up')
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict' })
+      expect(f.room.doc.getMap<any>('conflicts').get(activeKey)).toMatchObject({ status: 'conflict', openId: firstOpening })
+    } finally { evaluated?.stop(); set?.stop(); graph?.stop(); f.cleanup() }
+  })
+
+  it('notifies a consumer of an authorized whole-file deletion from the running graph', async () => {
+    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
+    let graph: GraphIndex | undefined, reader: RoomDoc | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      const consumer = 'from api import call\ncall(1)\n'
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle()
+      const ready = async (rev: number) => {
+        const deadline = Date.now() + 3000
+        while (f.room.graphs.get('B')?.status !== 'ready' || f.room.graphs.get('B')?.sourceRev !== rev) {
+          if (Date.now() >= deadline) throw new Error('graph did not publish deletion revision')
+          await new Promise(resolve => setTimeout(resolve, 10))
+        }
+      }
+      await ready(1)
+      expect(f.room.graphs.get('B')?.edges).toContainEqual(expect.objectContaining({ source: 'api.py', target: 'consumer.py' }))
+      rmSync(join(f.dir, 'api.py'))
+      f.room.doc.transact(() => {
+        f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'D', state: 'shared', at: 2, fence: '1' })
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+      })
+      await graph.whenIdle(); await ready(2)
+      reader = new RoomDoc()
+      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
+      expect(reader.graphs.get('B')?.observed).toContainEqual(expect.objectContaining({ path: 'api.py', symbol: 'call', kind: 'delete' }))
+      await new ConflictSet({ ...f.session('A'), room: reader } as Session).reconcile('deleted provider')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict' })
+    } finally { graph?.stop(); reader?.doc.destroy(); f.cleanup() }
+  })
+
+  it('clears a deletion contract after the consumer actually removes its last reference', async () => {
+    const f = fixture({ 'api.py': 'def call(a):\n    pass\n' })
+    let graph: GraphIndex | undefined, reader: RoomDoc | undefined, set: ConflictSet | undefined
+    let evaluated: ReturnType<typeof recordEvaluations> | undefined
+    try {
+      f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+      const consumer = 'from api import call\ncall(1)\n'
+      f.room.manifestHead.set('A', { ...f.room.manifestHead.get('A')!, level: 'full' })
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(consumer), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', consumer)
+      graph = new GraphIndex(f.room, 'B', f.dir, () => {}, { random: () => 0, minPublishMs: 0 })
+      graph.start(); await graph.whenIdle()
+      await waitForGraph(f.room, 'B', 1)
+      rmSync(join(f.dir, 'api.py'))
+      f.room.doc.transact(() => {
+        f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'D', state: 'shared', at: 2, fence: '1' })
+        f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, rev: 2, semRev: 2 })
+      })
+      await graph.whenIdle()
+      await waitForGraph(f.room, 'B', 2)
+      reader = new RoomDoc()
+      Y.applyUpdate(reader.doc, Y.encodeStateAsUpdate(f.room.doc))
+      set = new ConflictSet({ ...f.session('A'), room: reader } as Session); evaluated = recordEvaluations(set)
+      set.start()
+      await set.reconcile('deleted provider')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(reader.doc.getMap<any>('conflicts').get(key)).toMatchObject({ status: 'conflict' })
+      const noReference = 'print("done")\n'
+      reader.doc.transact(() => {
+        reader!.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash(noReference), at: 2, fence: '1' })
+        reader!.setOverlay(manifestKey('A', '1'), 'consumer.py', noReference)
+        reader!.manifestHead.set('A', { ...reader!.manifestHead.get('A')!, rev: 2, semRev: 2 })
+      })
+      await set.reconcile('last reference removed')
+      expect(reader.doc.getMap<any>('conflicts').has(key)).toBe(false)
+      expect(evaluated.results.filter(result => result.kind === 'contract' && result.path === 'api.py').at(-1)).toMatchObject({ status: 'clean' })
+    } finally { evaluated?.stop(); set?.stop(); graph?.stop(); reader?.doc.destroy(); f.cleanup() }
+  })
+
+  it('keeps the add/add notice id when its first differing line moves', async () => {
+    const f = fixture(), path = 'copied.lua'
+    f.holder('A'); f.holder('B'); f.entry('A', undefined); f.entry('B', undefined)
+    const publish = (name: string, text: string, rev: number) => {
+      f.room.manifest.get(manifestKey(name, '1'))!.set(path, { change: 'A', state: 'shared', hash: gitBlobHash(text), at: rev, fence: '1' })
+      f.room.setOverlay(manifestKey(name, '1'), path, text)
+      f.room.manifestHead.set(name, { ...f.room.manifestHead.get(name)!, rev, semRev: rev })
+    }
+    const set = new ConflictSet(f.session('A')), key = slotKey('A', 'merge', 'B', path)
+    try {
+      publish('A', 'header\nours\n', 1); publish('B', 'header\ntheirs\n', 1)
+      await set.reconcile('diverged')
+      const first = f.room.doc.getMap<any>('conflicts').get(key)
+      expect(first).toMatchObject({ status: 'conflict', lines: [2] })
+      publish('B', 'new header\nheader\ntheirs\n', 2)
+      await set.reconcile('difference moved')
+      expect(f.room.doc.getMap<any>('conflicts').get(key)).toMatchObject({ factId: first.factId, lines: [1] })
+      expect(f.room.doc.getMap<any>('conflicts').get(key)?.openId).toBe(first.openId)
+      expect(openConflicts(f.room, 'A')).toHaveLength(1)
+    } finally { set.stop(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it('rereads projected source provenance before replaying an unchanged merge', async () => {
+    const f = fixture(), source = new RoomDoc()
+    f.holder('L'); f.holder('W', 'L'); f.holder('B')
+    f.entry('L', undefined); f.entry('W', undefined, false, 'L'); f.entry('B', 'peer\n')
+    const projected = f.room.manifest.get(manifestKey('W', '1'))!
+    projected.set('x', { change: 'M', state: 'held', hash: gitBlobHash('worker\n'), held: 'worker', at: 1, fence: '1' })
+    source.participants.set('W\0holder', { sessionId: 'session-W', epoch: 2, workerId: 'w' })
+    source.participants.set('W\0git', { branch: 'main', head: f.base, base: f.base, anchored: true, rev: 1, fence: '2' })
+    source.manifestHead.set('W', { base: f.base, fence: '2', coverage: { kind: 'all' }, level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: 1, complete: true })
+    const entries = new Y.Map<any>()
+    entries.set('x', { change: 'M', state: 'shared', hash: gitBlobHash('worker\n'), at: 1, fence: '2' })
+    source.manifest.set(manifestKey('W', '2'), entries)
+    source.setOverlay(manifestKey('W', '2'), 'x', 'worker\n')
+    const post = vi.fn().mockResolvedValue({ ok: true })
+    const workers = { ...f.session('L', post), room: source } as Session
+    const team = f.session('L')
+    await bindProjectedFixture(f, team, workers)
+    const set = new ConflictSet(team, 'W', workers, () => {}, 0, () => undefined)
+    const read = vi.spyOn(set as unknown as { read(...args: unknown[]): Promise<unknown> }, 'read')
+    try {
+      await set.reconcile('initial source')
+      expect(f.room.doc.getMap('conflicts').get(slotKey('W', 'merge', 'B', 'x'))).toMatchObject({ status: 'conflict' })
+      post.mockClear(); read.mockClear()
+      // Only the source-room snapshot changes; team inputs and file hashes stay fixed.
+      source.manifestHead.set('W', { ...source.manifestHead.get('W')!, rev: 2, semRev: 2 })
+      await set.reconcile('source invalidated')
+      expect(read.mock.calls.some(([snap]) => (snap as { name: string }).name === 'W')).toBe(true)
+      expect(f.room.doc.getMap('conflicts').get(slotKey('W', 'merge', 'B', 'x'))).toMatchObject({ status: 'conflict' })
+    } finally { set.stop(); source.doc.destroy(); f.room.doc.destroy(); f.cleanup() }
+  })
+
+  it('writes a projected worker edit-in-claim slot in team and posts to workers room', async () => {
+    const f = fixture()
+    try {
+      f.holder('L'); f.holder('W', 'L'); f.holder('B')
+      f.entry('L', undefined)
+      f.entry('W', 'worker\n', false, 'L')
+      f.entry('B', undefined)
+      f.room.addClaim({ by: 'B', byKind: 'agent', path: 'x', from: 1, to: 1, intent: 'edit' }, { name: 'B', kind: 'agent' })
+      const team = f.session('L'), workersPost = vi.fn().mockResolvedValue({ ok: true })
+      await reconcileProjectedConflicts({ team, workers: f.session('L', workersPost), owner: 'W' })
+      const slots = [...f.room.doc.getMap<{ owner: string; kind: string; status: string; fence: string }>('conflicts').values()]
+      expect(slots).toContainEqual(expect.objectContaining({ owner: 'W', kind: 'edit-in-claim', status: 'conflict', fence: '1' }))
+      expect(openConflicts(f.room, 'W')).toEqual([expect.objectContaining({ kind: 'edit-in-claim' })])
+    } finally { f.cleanup() }
+  })
+
+  it('notifies again when a conflicting contract changes signature a second time', async () => {
+    const f = fixture()
+    try {
+      f.holder('A'); f.holder('B')
+      f.entry('A', 'call()\n')
+      f.entry('B', undefined)
+      f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, level: 'full' })
+      f.room.manifest.get(manifestKey('A', '1'))!.set('consumer.py', { change: 'A', state: 'shared', hash: gitBlobHash('from api import call\ncall()\n'), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('A', '1'), 'consumer.py', 'from api import call\ncall()\n')
+      f.room.manifest.get(manifestKey('B', '1'))!.set('api.py', { change: 'A', state: 'shared', hash: gitBlobHash('def call(a, b):\n    pass\n'), at: 1, fence: '1' })
+      f.room.setOverlay(manifestKey('B', '1'), 'api.py', 'def call(a, b):\n    pass\n')
+      const graph = (detail: string) => ({ version: 1 as const, base: f.base, sourceFence: '1', sourceRev: 1, at: 1, status: 'ready' as const,
+        paths: ['consumer.py', 'api.py'], edges: [{ source: 'api.py', target: 'consumer.py', symbols: ['call'] }],
+        observed: [{ path: 'api.py', symbol: 'call', kind: 'signature' as const, detail }], truncated: false })
+      f.room.graphs.set('B', graph('call(a) → call(a, b)'))
+      await new ConflictSet(f.session('A')).reconcile('graph')
+      const key = slotKey('A', 'contract', 'B', 'api.py', 'call')
+      expect(f.room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'conflict', why: 'call(a) → call(a, b)' })
+      const firstFact = f.room.doc.getMap<any>('conflicts').get(key).factId
+      f.room.graphs.set('B', graph('call(a) → call(a, b, c)'))
+      await new ConflictSet(f.session('A')).reconcile('graph')
+      expect(f.room.doc.getMap('conflicts').get(key)).toMatchObject({ status: 'conflict', why: 'call(a) → call(a, b, c)' })
+      expect(f.room.doc.getMap<any>('conflicts').get(key).factId).not.toBe(firstFact)
+    } finally { f.cleanup() }
+  })
+
 })
 
 
@@ -2563,7 +2476,7 @@ describe('worker pair baselines', () => {
     try {
       await set.reconcile('worker pair baseline')
       const slot = f.room.doc.getMap<any>('conflicts').get(slotKey(owner, 'merge', other, 'x'))
-      const notices = f.post.mock.calls.filter(call => call[1]?.type === 'merge-conflict').map(call => call[1].text)
+      const notices = openConflicts(f.room, owner).filter(entry => entry.kind === 'merge').map(entry => entry.text)
       return { status: slot?.status as string | undefined, notices }
     } finally { set.stop() }
   }
@@ -2676,22 +2589,14 @@ describe('per-peer merge notices', () => {
       }
       room.manifestHead.set(name, { ...room.manifestHead.get(name)!, rev, semRev: rev })
     }
-    const posted: any[] = []
-    let seq = 0
-    const post = vi.fn().mockImplementation((from, body, opts) => {
-      const msg = { ...body, id: opts.id, from: from.name, fromKind: from.kind, at: ++seq, seq }
-      if (!posted.some(m => m.id === msg.id)) posted.push(msg)
-      return Promise.resolve({ ok: true, msg })
-    })
     const session = { room, awareness: { getStates: () => states } as unknown as Awareness,
-      provider: { synced: true, on() {}, off() {} }, me: { name: 'A', kind: 'agent' }, dir, post,
+      provider: { synced: true, on() {}, off() {} }, me: { name: 'A', kind: 'agent' }, dir, post: vi.fn(),
       lease: { fence: () => '1' } } as unknown as Session
     const set = new ConflictSet(session, 'A', session, () => {}, 0, () => undefined)
     // The merge budget spaces real merges over seconds; a pass is still one pass without it.
     vi.spyOn(set as unknown as { budget(): Promise<void> }, 'budget').mockResolvedValue(undefined)
-    /** Notices posted for the first time by one pass. */
-    const pass = async () => { const before = posted.length; await set.reconcile('change'); return posted.slice(before) }
-    return { room, edit, posted, pass, set, cleanup: () => { set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) } }
+    const pass = async () => { await set.reconcile('change'); return openConflicts(room, 'A') }
+    return { room, edit, pass, set, cleanup: () => { set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) } }
   }
 
   it('tells a burst against one peer as one notice, updates it, clears it, and keeps two peers apart', async () => {
@@ -2701,113 +2606,91 @@ describe('per-peer merge notices', () => {
       f.edit('A', twelve, 'mine'); f.edit('B', twelve, 'theirs')
       const burst = await f.pass()
       expect(burst).toHaveLength(1)
-      expect(burst[0]).toMatchObject({ type: 'merge-conflict', to: 'A', priority: 'notify', path: 'src/f01.ts' })
-      expect(formatMsg(burst[0])).toBe("[notify] CONFLICT: 12 files conflict with B's version: " +
-        `${paths.slice(0, 8).map(p => `${p} at lines 2`).join('; ')}; and 4 more`)
-      // Per-file detail stays in the slots room_state reads.
+      expect(burst[0]).toMatchObject({ kind: 'merge', other: 'B', priority: 'notify' })
+      expect(burst[0]!.text).toBe("12 files conflict with B's version: " + `${paths.slice(0, 8).map(p => `${p} at lines 2`).join('; ')}; and 4 more`)
       expect(paths.slice(0, 12).every(p => f.room.doc.getMap<any>('conflicts').get(slotKey('A', 'merge', 'B', p))?.settled === 'conflict')).toBe(true)
-
-      // A 13th file against the same peer replaces the notice; an unchanged pass posts nothing new.
       f.edit('A', [paths[12]!], 'mine'); f.edit('B', [paths[12]!], 'theirs')
       const thirteenth = await f.pass()
       expect(thirteenth).toHaveLength(1)
-      expect(formatMsg(thirteenth[0])).toMatch(/^\[fyi\] CONFLICT: 13 files conflict with B's version: /)
-      expect(thirteenth[0].id.split(':peer:')[0]).toBe(burst[0].id.split(':peer:')[0])
-      // The existing read rule retains an undelivered notify alongside a later fyi update.
-      expect(supersededConflictNotices(f.posted)).toEqual(new Set())
-      expect(await f.pass()).toEqual([])
-
-      // Clearing some files updates the notice without a new wake; clearing all removes it.
+      expect(thirteenth[0]!.id).toBe(burst[0]!.id)
+      expect(thirteenth[0]!.slots).toHaveLength(13)
+      expect(thirteenth[0]!.text).toMatch(/^13 files conflict with B's version: /)
+      expect((await f.pass()).map(n => n.id)).toEqual([burst[0]!.id])
       f.edit('B', paths.slice(0, 3), 'mine')
       const some = await f.pass()
       expect(some).toHaveLength(1)
-      expect(formatMsg(some[0])).toBe("[fyi] CONFLICT: 10 files conflict with B's version: " +
-        `${paths.slice(3, 11).map(p => `${p} at lines 2`).join('; ')}; and 2 more; 3 files cleared: ${paths.slice(0, 3).join(', ')}`)
+      expect(some[0]!.slots.map(s => s.path)).toEqual(paths.slice(3))
+      expect(some[0]!.text).toBe("10 files conflict with B's version: " + `${paths.slice(3, 11).map(p => `${p} at lines 2`).join('; ')}; and 2 more`)
       f.edit('B', paths.slice(3), 'mine')
-      const all = await f.pass()
-      expect(all).toHaveLength(1)
-      expect(all[0]).toMatchObject({ priority: 'fyi', clearedFrom: 'conflict' })
-      expect(formatMsg(all[0])).toBe(`[fyi] CONFLICT cleared: 13 files no longer conflict with B's version: ${paths.slice(0, 8).join(', ')}, and 5 more`)
-      expect([...supersededConflictNotices(f.posted)].sort()).toEqual(f.posted.slice(0, -1).map(m => m.id).sort())
-
-      // Two peers in one pass: two notices, one each.
+      expect(await f.pass()).toEqual([])
+      expect([...f.room.doc.getMap<any>('conflicts').values()].some(slot => slot.settled === 'conflict')).toBe(false)
       f.edit('B', paths.slice(0, 2), 'theirs'); f.edit('C', paths.slice(0, 3), 'other')
       const two = await f.pass()
-      expect(two.map(m => formatMsg(m)).sort()).toEqual([
-        `[notify] CONFLICT: 2 files conflict with B's version: ${paths[0]} at lines 2; ${paths[1]} at lines 2`,
-        `[notify] CONFLICT: 3 files conflict with C's version: ${paths.slice(0, 3).map(p => `${p} at lines 2`).join('; ')}`,
+      expect(two.map(n => n.text).sort()).toEqual([
+        `2 files conflict with B's version: ${paths[0]} at lines 2; ${paths[1]} at lines 2`,
+        `3 files conflict with C's version: ${paths.slice(0, 3).map(p => `${p} at lines 2`).join('; ')}`,
       ])
-      // A new episode with B: the cleared notice no longer covers it.
-      expect(supersededConflictNotices(f.posted).has(two.find(m => m.text.includes("B's"))!.id)).toBe(false)
+      expect(two.find(n => n.other === 'B')!.id).not.toBe(burst[0]!.id)
     } finally { f.cleanup() }
   })
-
   it('keeps the per-file wording for a single file', async () => {
     const f = fixture()
     try {
       f.edit('A', [paths[0]!], 'mine'); f.edit('B', [paths[0]!], 'theirs')
-      const [notice] = await f.pass()
-      expect(formatMsg(notice)).toBe(`[notify] CONFLICT on ${paths[0]}: ${paths[0]} conflicts with B's version at lines 2`)
+      const [entry] = await f.pass()
+      expect(formatConflictLine(entry!)).toBe(`[notify] CONFLICT: ${paths[0]} conflicts with B's version at lines 2`)
       f.edit('B', [paths[0]!], 'mine')
-      const [cleared] = await f.pass()
-      expect(formatMsg(cleared)).toBe(`[fyi] CONFLICT cleared on ${paths[0]}: the conflict with B cleared`)
+      expect(await f.pass()).toEqual([])
     } finally { f.cleanup() }
   })
-
   it('wakes once while one pair changes files and lines, then wakes after a full clear', async () => {
     const f = fixture()
     try {
       f.edit('A', paths.slice(0, 3), 'mine'); f.edit('B', [paths[0]!], 'theirs')
-      expect((await f.pass()).map(m => m.priority)).toEqual(['notify'])
+      const [initial] = await f.pass()
+      expect(initial!.slots).toHaveLength(1)
       f.edit('B', [paths[1]!], 'theirs')
-      expect((await f.pass()).map(m => m.priority)).toEqual(['fyi'])
+      expect((await f.pass())[0]).toMatchObject({ id: initial!.id, slots: [expect.anything(), expect.anything()] })
       f.edit('A', [paths[0]!], 'mine', 'more mine')
-      expect((await f.pass()).map(m => m.priority)).toEqual(['fyi'])
+      expect((await f.pass())[0]!.id).toBe(initial!.id)
       f.edit('B', [paths[0]!], 'mine', 'more mine')
-      expect((await f.pass()).map(m => m.priority)).toEqual(['fyi'])
+      expect((await f.pass())[0]!.slots.map(s => s.path)).toEqual([paths[1]])
       f.edit('B', [paths[2]!], 'theirs')
-      expect((await f.pass()).map(m => m.priority)).toEqual(['fyi'])
-      expect(f.posted.filter(m => m.priority === 'notify')).toHaveLength(1)
+      expect((await f.pass())[0]).toMatchObject({ id: initial!.id, slots: [expect.anything(), expect.anything()] })
       f.edit('B', paths.slice(1, 3), 'mine')
-      expect((await f.pass())[0]).toMatchObject({ priority: 'fyi', clearedFrom: 'conflict' })
+      expect(await f.pass()).toEqual([])
       f.edit('B', [paths[1]!], 'theirs again')
-      expect((await f.pass()).map(m => m.priority)).toEqual(['notify'])
-      expect(f.posted.filter(m => m.priority === 'notify')).toHaveLength(2)
+      const [reopened] = await f.pass()
+      expect(reopened!.slots.map(s => s.path)).toEqual([paths[1]])
+      expect(reopened!.id).not.toBe(initial!.id)
     } finally { f.cleanup() }
   })
 })
 
-describe('per-peer merge notice delivery', () => {
-  it('owes only the latest notice per peer, but keeps a notify owed past a clear-only fyi update', async () => {
-    const { hubAppend } = await import('@room/shared/testing')
-    const { Ledger } = await import('../src/ledger.js')
-    const room = new RoomDoc()
-    const s = { room, me: { name: 'A', kind: 'agent' }, roomName: 'r', lease: { fence: () => '1' } } as unknown as Session
-    const ledger = new Ledger({ sessionId: () => 'session-A', route: () => ({}) })
-    ledger.bind(s)
-    const notice = (id: string, priority: 'notify' | 'fyi', extra: object = {}) =>
-      hubAppend(room, { name: 'room', kind: 'agent' }, { type: 'merge-conflict', to: 'A', path: 'a', priority, text: `2 files conflict with B's version: a; b`, ...extra } as any, { id })
-    const b = (n: string) => `${peerNoticeId('A', 'B', 1, [{ path: n, epoch: 1 }], []).split(':peer:')[0]}:peer:1:${n}`
-    const c = peerNoticeId('A', 'C', 1, [{ path: 'a', epoch: 1 }], [])
-    notice(b('one'), 'notify'); notice(c, 'notify'); notice(b('two'), 'notify')
-    expect(ledger.candidates(s).map(m => m.id).sort()).toEqual([b('two'), c].sort())
-    notice(b('three'), 'fyi')
-    expect(ledger.candidates(s).map(m => m.id).sort()).toEqual([b('two'), b('three'), c].sort())
-    notice(b('cleared'), 'fyi', { clearedFrom: 'conflict' })
-    expect(ledger.candidates(s).map(m => m.id).sort()).toEqual([b('cleared'), c].sort())
-    room.doc.destroy()
-  })
-
-  it('lists every open file per peer for room_state', async () => {
-    const { openMergeConflicts } = await import('../src/conflict-set.js')
-    const room = new RoomDoc(), post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1')
-    for (const [other, path] of [['B', 'y'], ['B', 'x'], ['C', 'x']]) await slots.settle(slotKey('A', 'merge', other!, path!),
-      { owner: 'A', other: other!, kind: 'merge', path: path!, status: 'conflict', inputs: path!, factId: path!, lines: [3] })
-    expect(openMergeConflicts(room, 'A')).toEqual([
+it('lists every open file per peer for room_state', async () => {
+  const room = new RoomDoc(), slots = new ConflictSlots(room, '1')
+  try {
+    for (const [other, path] of [['B', 'y'], ['B', 'x'], ['C', 'x']] as const) await slots.settle(slotKey('A', 'merge', other, path),
+      { owner: 'A', other, kind: 'merge', path, status: 'conflict', inputs: path, factId: path, lines: [3] })
+    expect(openConflicts(room, 'A').flatMap(entry => entry.slots.map(slot => ({ other: slot.other, path: slot.path, lines: slot.lines })))
+      .sort((a, b) => a.other.localeCompare(b.other) || a.path.localeCompare(b.path))).toEqual([
       { other: 'B', path: 'x', lines: [3] }, { other: 'B', path: 'y', lines: [3] }, { other: 'C', path: 'x', lines: [3] }])
-    room.doc.destroy()
-  })
+  } finally { room.doc.destroy() }
+})
+
+
+it('uses notify for the lead when the claim holder is its running worker', async () => {
+  const room = new RoomDoc(), slots = new ConflictSlots(room, '1')
+  room.workerViews.set('w', { id: 'w', tag: 'w', name: 'A+w', lead: 'A', mode: 'here', host: 'codex', task: 't', branch: 'b', status: 'running', run: 1, startedAt: 1, fence: '1' })
+  const key = slotKey('A', 'edit-in-claim', 'A+w', 'x')
+  const result = { owner: 'A', other: 'A+w', kind: 'edit-in-claim' as const, path: 'x', status: 'conflict' as const, factId: 'f' }
+  try {
+    await slots.settle(key, { ...result, subject: 'c', inputs: 'i' })
+    const first = openConflicts(room, 'A')[0]!
+    expect(first.priority).toBe('notify')
+    await slots.settle(key, { ...result, subject: 'd', inputs: 'renewed claim' })
+    expect(openConflicts(room, 'A')).toEqual([expect.objectContaining({ id: first.id, priority: 'notify', slots: [expect.objectContaining({ subject: 'd' })] })])
+  } finally { room.doc.destroy() }
 })
 
 it('a fresh live worker with its view not yet projected must retain a current conflict', async () => {
@@ -2817,14 +2700,12 @@ it('a fresh live worker with its view not yet projected must retain a current co
     room.participants.set(`${owner}\0holder`, { sessionId: 'live-session', epoch: 1, workerId: 'w_starting', pid: 1234, startTime: 'now', executable: 'codex', at: 1 })
     const awareness = { getStates: () => new Map([[1, { user: { name: owner, kind: 'agent' }, sessionId: 'live-session' }]]) }
     expect(participantsView(room, awareness, Date.now()).find(p => p.name === owner)?.visible).toBe(true)
-    const slots = new ConflictSlots(room, vi.fn(async (from, body, options) => {
-      hubAppend(room, from, body, { id: options.id, at: 2 }); return { ok: true } as const
-    }), 'fence')
+    const slots = new ConflictSlots(room, 'fence')
     await slots.settle(slotKey(owner, 'merge', other, 'x'), { owner, other, path: 'x', kind: 'merge', status: 'conflict', inputs: 'live', factId: 'live' })
-    const notice = room.messages()[0]!
-    expect.soft(owed(room, { name: owner }, { frontier: 0, routed: new Set() }, {}).map(m => m.id)).toContain(notice.id)
+    expect(openConflicts(room, owner)).toHaveLength(1)
+    const first = openConflicts(room, owner)[0]!
     trim(room, 3)
-    expect(room.outcomes.has(notice.id)).toBe(false)
+    expect(openConflicts(room, owner).map(entry => entry.id)).toEqual([first.id])
   } finally { room.doc.destroy() }
 })
 
@@ -2834,23 +2715,15 @@ it('trim between claim renewal and slot refresh must not poison the unchanged se
     for (const name of [owner, other]) room.participants.set(`${name}\0id`, { name, kind: 'agent' })
     const add = (id: string) => room.claims.set(id, { id, by: other, byKind: 'agent', path: 'x', from: 1, to: 2, intent: 'edit', at: 1 })
     add('old-claim')
-    const slots = new ConflictSlots(room, vi.fn(async (from, body, options) => {
-      if (!room.message(options.id) && !room.outcomes.has(options.id)) hubAppend(room, from, body, { id: options.id, at: 2 })
-      return { ok: true } as const
-    }), 'fence')
-    // This is the actual ConflictSet producer's semantic per-path key, which deliberately survives claim renewal.
-    const key = slotKey(owner, 'edit-in-claim', other, 'x')
+    const slots = new ConflictSlots(room, 'fence'), key = slotKey(owner, 'edit-in-claim', other, 'x')
     const result = (subject: string) => ({ owner, other, path: 'x', subject, kind: 'edit-in-claim' as const, status: 'conflict' as const, inputs: subject, factId: 'same-overlap' })
     await slots.settle(key, result('old-claim'))
-    const notice = room.messages().find(m => m.to === owner)!
+    const first = openConflicts(room, owner)[0]!
     room.doc.transact(() => { room.claims.delete('old-claim'); add('new-claim') })
-    // A hub trim or an admission can run before the asynchronous conflict producer has refreshed its slot.
     trim(room, 3)
     await slots.settle(key, result('new-claim'))
-    await slots.replay(owner)
     expect(slots.get(key)?.subject).toBe('new-claim')
     expect(room.claims.has('new-claim')).toBe(true)
-    expect.soft(room.outcomes.has(notice.id)).toBe(false)
-    expect(owed(room, { name: owner }, { frontier: 0, routed: new Set() }, {}).map(m => m.id)).toContain(notice.id)
+    expect(openConflicts(room, owner)).toEqual([expect.objectContaining({ id: first.id, slots: [expect.objectContaining({ subject: 'new-claim' })] })])
   } finally { room.doc.destroy() }
 })

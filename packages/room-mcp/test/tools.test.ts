@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, highestSeq, manifestKey, manifestPaths, messageEndsWait, participantRecord } from '@room/shared'
+import { RoomDoc, openConflicts, formatConflictLine, type ConflictSlot, gitBlobHash, highestSeq, manifestKey, manifestPaths, messageEndsWait, participantRecord } from '@room/shared'
 import type { Identity, NoteMsg } from '@room/shared'
 import { createTools, DEFS, linkSharedDirs } from '../src/tools.js'
 import { NoRoom, syntheticSessionId, type Session } from '../src/session.js'
@@ -279,16 +279,43 @@ async function dropRegistry(): Promise<void> {
 }
 
 describe('session gating', () => {
-  it('lists each file of a per-peer conflict notice in room_state and room_state path=', async () => {
+  it('lists each file of current per-peer conflict state in room_state and room_state path=', async () => {
     const t = setup()
     const conflicts = t.room.doc.getMap<any>('conflicts')
     for (const [other, path, lines] of [['Kieran', 'b.py', [4, 9]], ['Kieran', 'a.py', [2]], ['Ben', 'a.py', []]] as const)
-      conflicts.set(`Rohan\0merge\0${other}\0${path}\0`, { owner: 'Rohan', other, kind: 'merge', path, status: 'conflict', settled: 'conflict', lines, epoch: 1, peerEpisode: 1 })
-    conflicts.set('Rohan\0merge\0Kieran\0c.py\0', { owner: 'Rohan', other: 'Kieran', kind: 'merge', path: 'c.py', status: 'clean', settled: 'clean', clearedFrom: 'conflict', epoch: 1, peerEpisode: 1 })
+      conflicts.set(`Rohan\0merge\0${other}\0${path}\0`, { owner: 'Rohan', other, kind: 'merge', path, status: 'conflict', settled: 'conflict', lines })
+    conflicts.set('Rohan\0merge\0Kieran\0c.py\0', { owner: 'Rohan', other: 'Kieran', kind: 'merge', path: 'c.py', status: 'clean', settled: 'clean' })
+    for (const [key, slot] of conflicts) conflicts.set(key, { ...slot, openId: slot.openId ?? `fixture-peer:${slot.other}`, endpoints: slot.endpoints ?? [{ name: slot.owner }, { name: slot.other }] })
     const out = await t.tools.call('room_state', { all: true })
-    expect(out).toContain("files that conflict with others' versions (3):\n  - a.py with Ben\n  - a.py with Kieran at lines 2\n  - b.py with Kieran at lines 4, 9\n")
-    expect(await t.tools.call('room_state', { path: 'b.py' })).toContain("conflicts with Kieran's version at lines 4, 9")
+    expect(out).toContain("open conflicts and overlaps (2):")
+    expect(out).toContain("a.py conflicts with Ben's version")
+    expect(out).toContain("2 files conflict with Kieran's version: a.py at lines 2; b.py at lines 4, 9")
+    expect(await t.tools.call('room_state', { path: 'b.py' })).toContain("b.py at lines 4, 9")
     expect(await t.tools.call('room_state', { path: 'c.py' })).not.toContain('conflicts with')
+  })
+
+  it.each(['merge', 'edit-in-claim', 'claims', 'contract'] as const)('shows current %s conflict state in full and path replies, then removes it', async kind => {
+    const t = setup()
+    const slots = t.room.doc.getMap<ConflictSlot>('conflicts')
+    const slot: ConflictSlot = { kind, owner: 'Rohan', other: 'Kieran', path: 'a.py', subject: 'symbol', status: 'conflict', settled: 'conflict', inputs: '', factId: '', fence: '', checkedAt: 1, lines: [2] }
+    slot.openId = `fixture-${kind}`; slot.endpoints = [{ name: slot.owner }, { name: slot.other }]
+    slots.set('state', slot)
+    const text = formatConflictLine(openConflicts(t.room, 'Rohan')[0])
+    expect(await t.tools.call('room_state', { all: true })).toContain(text)
+    expect(await t.tools.call('room_state', { path: 'a.py' })).toContain(text)
+    slots.set('state', { ...slot, status: 'clean', settled: 'clean' })
+    expect(await t.tools.call('room_state', { all: true })).not.toContain(text)
+    expect(await t.tools.call('room_state', { path: 'a.py' })).not.toContain(text)
+  })
+
+  it('ignores old conflict messages in state replies even with all=true', async () => {
+    const t = setup()
+    t.room.bus.push([{ id: 'ordinary', type: 'note', at: 0, from: 'Kieran', fromKind: 'agent', to: 'Rohan', priority: 'notify', text: 'keep this ordinary note' }])
+    for (let i = 0; i < 40; i++) t.room.bus.push([{ id: 'old' + i, type: ['merge-conflict', 'conflict', 'contract'][i % 3], at: i + 1, from: 'room', fromKind: 'agent', to: 'Rohan', priority: 'notify', path: 'a.py', text: 'old conflict body' } as never])
+    const reply = await t.tools.call('room_state', { all: true })
+    expect(reply).not.toContain('old conflict body')
+    expect(reply.slice(reply.indexOf('recent bus'))).toContain('keep this ordinary note')
+    expect(await t.tools.call('room_state', {})).not.toContain('old conflict body')
   })
 
   it('summarizes six or more changed paths but preserves short lists and path lookup', async () => {
@@ -1183,7 +1210,7 @@ describe('scope, claims, plans, ledger', () => {
     } finally { release(); await refresh; read.mockRestore(); await t.tools.shutdown(); s.graph?.stop(); s.awareness.destroy(); t.room.doc.destroy(); t.other.doc.destroy() }
   })
 
-  it('overlapping claims across a comparable pair produce a deterministic ConflictSet notice', async () => {
+  it('overlapping claims across a comparable pair produce a stable current conflict', async () => {
     const t = setup()
     comparableClaimPair(t.room)
     t.other.addClaim({ path: 'app.py', from: 4, to: 5, by: 'Kieran', byKind: 'agent', intent: 'fix b' })
@@ -1191,8 +1218,12 @@ describe('scope, claims, plans, ledger', () => {
     const out = await t.tools.call('room_claim', { path: 'app.py', from: 5, to: 5, intent: 'also b' })
     expect(out).toContain('CONFLICT: overlaps')
     await new ConflictSet(t.session!).reconcile('test')
-    const c = t.room.messages().find(m => m.type === 'conflict' && m.id.startsWith('cf:'))
-    expect(c).toMatchObject({ priority: 'notify', to: 'Rohan' })
+    const conflicts = openConflicts(t.room, 'Rohan').filter(entry => entry.kind === 'claims')
+    expect(conflicts).toHaveLength(1)
+    expect(conflicts[0]).toMatchObject({ priority: 'notify', owner: 'Rohan', other: 'Kieran', slots: [{ path: 'app.py', status: 'conflict' }] })
+    const id = conflicts[0]!.id
+    await new ConflictSet(t.session!).reconcile('same comparable claims')
+    expect(openConflicts(t.room, 'Rohan').filter(entry => entry.kind === 'claims').map(entry => entry.id)).toEqual([id])
     expect([...t.room.doc.getMap<{ kind: string; status: string }>('conflicts').values()]).toContainEqual(
       expect.objectContaining({ kind: 'claims', status: 'conflict' }))
   })
@@ -1310,7 +1341,7 @@ describe('graph', () => {
 })
 
 describe('concurrency', () => {
-  it('two claims that raced past the pre-check reconcile to one slot notice', async () => {
+  it('two claims that raced past the pre-check reconcile to one stable current opening', async () => {
     const t = setup()
     comparableClaimPair(t.room)
     await t.tools.call('room_state', {}) // attaches the claims observer
@@ -1320,9 +1351,13 @@ describe('concurrency', () => {
     await new Promise(r => setTimeout(r, 5)) // ids are time-ordered; the earlier (smaller) id is the one that reports
     t.other.addClaim({ path: 'app.py', from: 2, to: 2, by: 'Kieran', byKind: 'agent', intent: 'theirs' })
     await new ConflictSet(t.session!).reconcile('remote claim')
-    const conflicts = t.room.messages().filter(m => m.type === 'conflict' && m.id.startsWith('cf:'))
-    expect(conflicts.length).toBe(1)
-    expect(conflicts[0]).toMatchObject({ priority: 'notify', to: 'Rohan' })
+    const conflicts = openConflicts(t.room, 'Rohan').filter(entry => entry.kind === 'claims')
+    expect(conflicts).toHaveLength(1)
+    const own = t.room.openClaims().find(claim => claim.by === 'Rohan')!, peer = t.room.openClaims().find(claim => claim.by === 'Kieran')!
+    expect(conflicts[0]).toMatchObject({ priority: 'notify', owner: 'Rohan', other: 'Kieran', slots: [{ path: 'app.py', subject: own.id + '\0' + peer.id, status: 'conflict' }] })
+    const id = conflicts[0]!.id
+    await new ConflictSet(t.session!).reconcile('same raced claims')
+    expect(openConflicts(t.room, 'Rohan').filter(entry => entry.kind === 'claims').map(entry => entry.id)).toEqual([id])
   })
 
   it('inbox tracks message ids, so a message inserted before an already-seen one is still delivered', async () => {

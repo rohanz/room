@@ -1,7 +1,6 @@
 /**
- * Server-instructions rule 1: a room is silent while alone. A session with no company is never woken
- * (Claude inbox socket, Codex queue) and its hooks deliver nothing; what it is owed stays in
- * room_state. A session's own workers are company only for their own notices.
+ * Ordinary messages stay quiet while alone, apart from eligible own-worker messages.
+ * Current conflict state remains actionable even when its peer is offline; legacy conflict messages are ignored.
  */
 import { afterAll, afterEach, beforeAll, beforeEach, expect, it, vi } from 'vitest'
 import { execFileSync } from 'node:child_process'
@@ -13,6 +12,7 @@ import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protoc
 import { RoomDoc, type BaseMsg, type ConflictMsg, type DoneMsg, type NoteMsg, type QuestionMsg } from '@room/shared'
 import { hubAppend } from '@room/shared/testing'
 import { createTools } from '../src/tools.js'
+import { ConflictSlots, slotKey } from '../src/conflict-set.js'
 import { startArbitration } from '../src/arbitration.js'
 import { sessionDirectory, type Session } from '../src/session.js'
 import type { SessionBinding } from '../src/binding.js'
@@ -64,7 +64,7 @@ async function mcp() {
 }
 const quiet = () => new Promise(r => setTimeout(r, 500))
 
-it('a solo participant: base, Room and conflict notices do not wake or reach the hook, but room_state shows them', async () => {
+it('a solo participant reads ordinary notices through room_state and ignores old conflict messages', async () => {
   const m = await mcp()
   try {
     visiblePeer(m.s.room, 'Kieran') // known to the room (offline), not here now
@@ -78,7 +78,7 @@ it('a solo participant: base, Room and conflict notices do not wake or reach the
     const state = await m.tools.call('room_state', {})
     expect(state).toContain('main moved on')
     expect(state).toContain('released your claim on app.py:1-2')
-    expect(state).toContain("you edited app.py inside Kieran's claim")
+    expect(state).not.toContain("you edited app.py inside Kieran's claim")
     await quiet()
     expect(m.texts).toEqual([])
   } finally { await m.close() }
@@ -130,5 +130,23 @@ it('a distinct agent in the same checkout wakes for an addressed question and re
     await vi.waitFor(() => expect(m.texts).toHaveLength(1))
     expect(m.texts[0]).toContain('Kieran asked a question')
     expect(m.hookLines().join('\n')).toContain('can you review my edit?')
+  } finally { await m.close() }
+})
+
+it('an open state conflict wakes once and reaches the hook while its peer is offline', async () => {
+  const m = await mcp()
+  try {
+    visiblePeer(m.s.room, 'Kieran')
+    hubAppend<NoteMsg>(m.s.room, room, { type: 'note', to: 'Rohan', priority: 'notify', text: 'ordinary room notice stays quiet' })
+    const slots = new ConflictSlots(m.s.room, '1')
+    await slots.settle(slotKey('Rohan', 'merge', 'Kieran', 'app.py'), { owner: 'Rohan', other: 'Kieran', kind: 'merge', path: 'app.py', status: 'conflict', inputs: 'i', factId: 'f', lines: [4] })
+    await vi.waitFor(() => expect(m.texts).toHaveLength(1))
+    expect(m.texts[0]).toContain('conflict with Kieran')
+    const hook = m.hookLines().join('\n')
+    expect(hook).toContain('app.py conflicts with Kieran')
+    expect(hook).not.toContain('ordinary room notice stays quiet')
+    await m.tools.call('room_state', {})
+    await quiet()
+    expect(m.texts).toHaveLength(1)
   } finally { await m.close() }
 })

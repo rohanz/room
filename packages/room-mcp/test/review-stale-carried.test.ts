@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { RoomDoc, gitBlobHash, manifestKey } from '@room/shared'
+import { RoomDoc, openConflicts, gitBlobHash, manifestKey } from '@room/shared'
 import { epochPublication } from '@room/shared/testing'
 import type { Baseline } from '@room/roomd/baseline'
 import { ConflictSet, slotKey } from '../src/conflict-set.js'
@@ -50,6 +50,8 @@ it.each(['W', 'L', 'committed', 'missing', 'oversized'])('checks carried baselin
   try {
     await set.reconcile('delete versus modify of carried work')
     expect(room.doc.getMap('conflicts').get(slotKey('L', 'merge', 'W', path))).toMatchObject({ status: ['missing', 'oversized'].includes(scenario) ? 'unknown' : 'conflict' })
-    if (!['missing', 'oversized'].includes(scenario)) expect(post.mock.calls.length).toBeGreaterThan(0)
+    const open = openConflicts(room, 'L')
+    if (['missing', 'oversized'].includes(scenario)) expect(open).toEqual([])
+    else expect(open).toMatchObject([{ kind: 'merge', owner: 'L', other: 'W', priority: 'notify', slots: [{ path, status: 'conflict' }] }])
   } finally { set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) }
 })

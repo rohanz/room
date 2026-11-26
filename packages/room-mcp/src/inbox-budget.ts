@@ -4,8 +4,8 @@
  * (hooks reference, "JSON output"); a receipt for such output would record a loss. Hooks and tool replies
  * therefore select, in inbox order, only what fits this budget, and the rest stays owed.
  */
-import type { Msg, Priority } from '@room/shared'
-import type { Batch, Ledger } from './ledger.js'
+import type { Priority } from '@room/shared'
+import type { Batch, Ledger, DeliveryItem } from './ledger.js'
 import type { Session } from './session.js'
 
 /** Characters of inbox items and notices in one hook output or tool reply. */
@@ -13,18 +13,18 @@ export const INBOX_BUDGET = 6_000
 
 const rank: Record<Priority, number> = { interrupt: 0, notify: 1, fyi: 2 }
 /** Interrupts, then questions, then notify, then fyi; oldest first within each. */
-const inboxOrder = (m: Msg): number => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2 + rank[m.priority]
+const inboxOrder = (m: DeliveryItem): number => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2 + rank[m.priority]
 
-export interface Chosen { s: Session; m: Msg }
+export interface Chosen { s: Session; m: DeliveryItem }
 
 /**
  * Reserve into `batch`, in inbox order, what `sources` owe while `cost` (the rendered size) fits `budget`,
  * stopping at the first item that does not. `atLeastOne` takes the first item whatever its size (a tool
  * reply has room for it; a hook does not). `more` counts what stays owed among what `filter` accepts.
  */
-export function selectWithin(ledger: Ledger, sources: readonly Session[], batch: Batch, budget: number, cost: (c: Chosen) => number, atLeastOne = false, filter?: (s: Session) => (m: Msg) => boolean): { chosen: Chosen[]; more: number } {
+export function selectWithin(ledger: Ledger, sources: readonly Session[], batch: Batch, budget: number, cost: (c: Chosen) => number, atLeastOne = false, filter?: (s: Session) => (m: DeliveryItem) => boolean): { chosen: Chosen[]; more: number } {
   const all: Chosen[] = sources.flatMap(s => ledger.available(s, batch, filter?.(s)).map(m => ({ s, m })))
-  all.sort((a, b) => inboxOrder(a.m) - inboxOrder(b.m) || a.m.at - b.m.at)
+  all.sort((a, b) => inboxOrder(a.m) - inboxOrder(b.m) || (a.m.at ?? 0) - (b.m.at ?? 0))
   const chosen: Chosen[] = []
   let used = 0
   for (const c of all) {

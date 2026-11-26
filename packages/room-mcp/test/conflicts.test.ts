@@ -16,9 +16,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, formatMsg, manifestPaths, participantRecord, shouldWakeOnMsg } from '@room/shared'
+import { RoomDoc, openConflicts, manifestPaths, participantRecord, shouldWakeOnMsg } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools, type Tools } from '../src/tools.js'
+import { Ledger, formatDeliveryItem, isConflictItem } from '../src/ledger.js'
 import { changedRanges, ConflictSet } from '../src/conflict-set.js'
 import type { Session } from '../src/session.js'
 import { epochPublication, hubAppend } from '@room/shared/testing'
@@ -97,8 +98,8 @@ describe('changedRanges', () => {
   })
 })
 
-describe('temporary peer-copy notifications', () => {
-  it.each([true, false])('new copies (identical=%s) notify both participants only on divergence', async identical => {
+describe('temporary peer-copy conflict state', () => {
+  it.each([true, false])('new copies (identical=%s) expose and deliver both owners only on divergence', async identical => {
     const room = new RoomDoc(), path = 'copied.lua'
     const ours = '-- shared header\nreturn ours\n'
     const theirs = identical ? ours : '-- shared header\nreturn theirs\n'
@@ -116,26 +117,42 @@ describe('temporary peer-copy notifications', () => {
     const sets = sessions.map(session => new ConflictSet(session, session.me.name, session, () => {}))
     try {
       for (const set of sets) await set.reconcile('new peer copies')
-      const notices = room.messages().filter(m => m.type === 'merge-conflict')
-      if (identical) expect(notices).toEqual([])
-      else {
-        expect(notices).toHaveLength(2)
-        expect(notices.map(m => m.to).sort()).toEqual(['Kieran', 'Rohan'])
-        for (const notice of notices) {
-          expect(formatMsg(notice)).toContain('CONFLICT on copied.lua')
-          expect(notice.text).toContain('at lines 2')
-          expect(notice.priority).toBe('notify')
+      const open = openConflicts(room).filter(entry => entry.kind === 'merge')
+      const ledgers = sessions.map(session => {
+        const ledger = new Ledger({ sessionId: () => participantRecord(room, session.me.name)!.holder!.sessionId, route: () => ({}) })
+        ledger.bind(session)
+        return { session, ledger }
+      })
+      expect(open).toHaveLength(identical ? 0 : 2)
+      if (!identical) {
+        expect(open.map(entry => entry.owner).sort()).toEqual(['Kieran', 'Rohan'])
+        for (const entry of open) {
+          expect(entry).toMatchObject({ priority: 'notify', slots: [{ kind: 'merge', path, status: 'conflict', lines: [2] }] })
+          expect(entry.other).toBe(entry.owner === 'Rohan' ? 'Kieran' : 'Rohan')
         }
+      }
+      for (const { session, ledger } of ledgers) {
+        const batch = ledger.open('reply'), items = ledger.select(session, batch)
+        expect(items).toHaveLength(identical ? 0 : 1)
+        if (!identical) expect(items[0]).toMatchObject({ type: 'conflict-state', to: session.me.name, priority: 'notify' })
+        ledger.commit(batch)
       }
       clearFixture(room, 'Rohan', path)
       for (const set of sets) await set.reconcile('temporary copy removed')
       for (const set of sets) await set.reconcile('still removed')
-      const cleared = room.messages().filter(m => m.type === 'merge-conflict' && m.clearedFrom)
-      expect(cleared).toHaveLength(identical ? 0 : 2)
-      for (const notice of cleared) {
-        expect(formatMsg(notice)).toContain('CONFLICT cleared on copied.lua')
-        expect(notice.priority).toBe('fyi')
+      expect(openConflicts(room)).toHaveLength(0)
+      for (const { session, ledger } of ledgers) {
+        const batch = ledger.open('reply'), items = ledger.select(session, batch)
+        expect(items).toHaveLength(identical ? 0 : 1)
+        for (const item of items) {
+          expect(isConflictItem(item) && item.status).toBe('inactive')
+          expect(item.priority).toBe('fyi')
+          expect(formatDeliveryItem(item)).toContain('merge copied.lua')
+        }
+        ledger.commit(batch)
+        expect(ledger.candidates(session)).toEqual([])
       }
+      expect(room.messages().filter(m => ['conflict', 'merge-conflict', 'contract'].includes(m.type))).toEqual([])
     } finally {
       for (const set of sets) set.stop()
       for (const session of sessions) { session.awareness.destroy(); session.hub.close() }

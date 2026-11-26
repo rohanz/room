@@ -1,3 +1,4 @@
+import type { DeliveryItem } from '../ledger.js'
 import type { CodexWakeProbe as TurnProbe } from '../hosts/codex-turn.js'
 import fs from 'node:fs'
 import path from 'node:path'
@@ -110,7 +111,7 @@ export interface HandlerState {
   runningWorkers: (s: Session) => Promise<{ s: Session; w: LocalWorker }[]>
   hasCompany: (s: Session) => CompanyState
   /** Whether a message may wake this session or reach its hooks now (solo.ts: silent while alone). */
-  audible: (s: Session) => (m: Msg) => boolean
+  audible: (s: Session) => (m: DeliveryItem) => boolean
   dismissWorker: (s: Session, w: LocalWorker, why: string, stopReason?: LocalWorker['stopReason'], notify?: (send: () => Promise<unknown>) => Promise<void>, progress?: (phase: string) => void) => string | Promise<string>
   others: (s: Session) => string[]
   presences: (s: Session) => SharePresence[]

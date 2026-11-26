@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, manifestKey, participantRecord } from '@room/shared'
-import type { Identity, ManifestEntry, Msg } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey, openConflicts, participantRecord } from '@room/shared'
+import type { Identity, ManifestEntry, RoomDoc as RoomDocType } from '@room/shared'
 import { rulesFromText } from '@room/roomd/policy'
 import { projectWorkers } from '../src/worker-projector.js'
 import { Bridge, revokeLeadProjections } from '../src/bridge.js'
@@ -21,7 +21,6 @@ import { hubSeam } from './fixtures/hub.js'
 import { testPolicyStore } from './policy-fixture.js'
 import { Ledger } from '../src/ledger.js'
 import { WakeReconciler } from '../src/wake-reconciler.js'
-import { shouldWakeOnMsg } from '@room/shared'
 
 // Synthetic runs must have the same lifecycle on a process-capable preview host and in a sandbox.
 vi.mock('../src/leases.js', async importOriginal => {
@@ -150,8 +149,8 @@ async function fixture(texts: [string | undefined, string | undefined] = [ORDERS
   return { rohan, kieran, base, sync }
 }
 
-function warnings(messages: Msg[], recipient: string): Msg[] {
-  return messages.filter(m => m.to === recipient && (m.type === 'merge-conflict' || m.type === 'conflict'))
+function conflicts(room: RoomDocType, recipient: string) {
+  return openConflicts(room, recipient).filter(c => c.kind === 'merge' || c.kind === 'edit-in-claim' || c.kind === 'claims')
 }
 
 
@@ -171,28 +170,27 @@ it('does not promote an exact peer update that only clears one of two conflictin
   publishFiles(t.rohan.local, t.rohan.workerName, t.base, { [PATH]: ORDERS, [extra]: 'a = 1\n' })
   publishFiles(t.kieran.team, 'Kieran', t.base, { [PATH]: NAME, [extra]: 'a = 2\n' })
   await t.sync()
-  const initial = warnings(t.rohan.local.room.messages(), 'Rohan')
+  const initial = conflicts(t.rohan.team.room, 'Rohan')
   expect(initial).toHaveLength(1)
   expect(initial[0]).toMatchObject({ priority: 'notify' })
   publishFiles(t.kieran.team, 'Kieran', t.base, { [PATH]: NAME, [extra]: 'a = 1\n' })
   await t.sync()
-  const update = t.rohan.local.room.messages().filter(m => 'text' in m && m.text.includes('1 file cleared'))
-  expect(update).toHaveLength(2)
-  expect(update.find(m => m.to === t.rohan.workerName)).toMatchObject({ priority: 'fyi' })
-  expect(update.find(m => m.to === 'Rohan')).toMatchObject({ priority: 'fyi' })
+  const update = conflicts(t.rohan.team.room, 'Rohan')
+  expect(update).toHaveLength(1)
+  expect(update[0].id).toBe(initial[0].id)
+  expect(update[0].slots).toEqual([expect.objectContaining({ path: PATH })])
 })
 
-it('does not promote an approximate edit-in-claim notice', async () => {
+it('keeps an approximate edit-in-claim quiet for worker and lead', async () => {
   const t = await fixture([ORDERS, undefined])
   publishFiles(t.kieran.team, 'Kieran', t.base, { [PATH]: NAME }, true)
   t.kieran.team.room.addClaim({ path: PATH, from: 1, to: 2, by: 'Kieran', byKind: 'agent', intent: 'change handler' })
   await t.sync()
   const slots = [...t.rohan.team.room.doc.getMap<{ owner: string; kind: string; status: string }>('conflicts').values()]
   expect(slots).toContainEqual(expect.objectContaining({ owner: t.rohan.workerName, kind: 'edit-in-claim', status: 'possible' }))
-  const notes = t.rohan.local.room.messages().filter(m => m.type === 'conflict')
-  expect(notes).toHaveLength(2)
-  expect(notes.find(m => m.to === t.rohan.workerName)).toMatchObject({ priority: 'fyi' })
-  expect(notes.find(m => m.to === 'Rohan')).toMatchObject({ priority: 'fyi' })
+  for (const name of [t.rohan.workerName, 'Rohan']) {
+    expect(openConflicts(t.rohan.team.room, name).filter(c => c.kind === 'edit-in-claim')).toEqual([expect.objectContaining({ priority: 'fyi' })])
+  }
 })
 
 it('does not tell a local lead to ask itself in a team room for a private possible conflict', async () => {
@@ -205,29 +203,23 @@ it('does not tell a local lead to ask itself in a team room for a private possib
   const set = new ConflictSet(t.rohan.local)
   cleanup.push(() => set.stop())
   await set.reconcile('private local pair')
-  const notes = warnings(t.rohan.local.room.messages(), 'Rohan')
+  const notes = conflicts(t.rohan.local.room, 'Rohan')
   expect(notes).toHaveLength(1)
   expect(notes[0]).toMatchObject({ priority: 'fyi' })
   expect('text' in notes[0] && notes[0].text).not.toContain('two leads')
   expect('text' in notes[0] && notes[0].text).not.toContain('ask Rohan in the team room')
 })
 
-it('wakes only each lead for an initially possible conflict; replay and clear do not wake again', async () => {
-  const t = await fixture()
-  const sends = new Map<string, string[]>()
-  for (const s of [t.rohan.local, t.rohan.worker, t.kieran.local, t.kieran.worker]) {
-    const id = `session-${s.me.name}`
-    const ledger = new Ledger({ sessionId: () => id, route: () => ({}) })
-    ledger.bind(s)
-    const texts: string[] = []
-    sends.set(s.me.name, texts)
+it('wakes only each lead for a possible projected conflict; later files and clearance do not wake again', async () => {
+  const t = await fixture(), sends = new Map<string, string[]>()
+  for (const s of [t.rohan.team, t.rohan.worker, t.kieran.team, t.kieran.worker]) {
+    const id = 'session-' + s.me.name
+    const ledger = new Ledger({ sessionId: () => id, route: () => ({}) }); ledger.bind(s)
+    const texts: string[] = []; sends.set(s.me.name, texts)
     const wake = new WakeReconciler({ ledger, bound: () => ({ id, host: 'codex' }),
       sessionDir: () => undefined, turnProbe: { busy: async () => false }, windowMs: 0,
       send: async (_target, text) => { texts.push(text); return 'queue' } })
-    wake.attach(s)
-    const team = s === t.rohan.local ? t.rohan.team : s === t.kieran.local ? t.kieran.team : undefined
-    if (team) { ledger.bind(team); wake.attach(team) }
-    cleanup.push(() => wake.stop())
+    wake.attach(s); cleanup.push(() => wake.stop())
   }
   await t.sync()
   await vi.waitFor(() => {
@@ -238,26 +230,15 @@ it('wakes only each lead for an initially possible conflict; replay and clear do
   publishFiles(t.rohan.local, t.rohan.workerName, t.base, { [PATH]: ORDERS, [extra]: 'a = 1\n' })
   publishFiles(t.kieran.local, t.kieran.workerName, t.base, { [PATH]: NAME, [extra]: 'a = 2\n' })
   await t.sync()
-  await vi.waitFor(() => {
-    expect(sends.get('Rohan')).toHaveLength(2)
-    expect(sends.get('Kieran')).toHaveLength(2)
-  })
-  const before = t.rohan.local.room.messages().map(m => m.id)
-  for (let n = 0; n < 3; n++) await t.sync()
-  expect(t.rohan.local.room.messages().map(m => m.id)).toEqual(before)
   for (const own of [t.rohan, t.kieran]) {
+    expect(sends.get(own.team.me.name)).toHaveLength(1)
     expect(sends.get(own.workerName)).toEqual([])
-    const notes = warnings(own.local.room.messages(), own.team.me.name)
-    expect(notes).toHaveLength(2)
-    expect(shouldWakeOnMsg({ name: 'unrelated-teammate', kind: 'agent' }, notes[0]).wake).toBe(false)
+    expect(own.local.room.messages().filter(m => ['conflict', 'merge-conflict', 'contract'].includes(m.type))).toEqual([])
   }
   publishFiles(t.rohan.local, t.rohan.workerName, t.base, { [PATH]: NAME, [extra]: 'a = 2\n' })
   await t.sync()
   for (const own of [t.rohan, t.kieran]) {
-    const cleared = own.local.room.messages().filter(m => m.type === 'merge-conflict' && m.clearedFrom === 'possible')
-    expect(cleared).toHaveLength(4)
-    expect(cleared.every(m => m.priority === 'fyi')).toBe(true)
-    expect(sends.get(own.team.me.name)).toHaveLength(2)
-    expect(sends.get(own.workerName)).toEqual([])
+    expect(conflicts(own.local.room, own.workerName)).toEqual([])
+    expect(sends.get(own.team.me.name)).toHaveLength(1)
   }
 })

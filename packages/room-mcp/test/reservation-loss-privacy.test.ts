@@ -5,13 +5,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, manifestKey, type ManifestEntry } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey, openConflicts, type ConflictSlot, type ManifestEntry } from '@room/shared'
 import { epochPublication } from '@room/shared/testing'
 import { ConflictSet } from '../src/conflict-set.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { seedRegistryWorker } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
 import type { Session } from '../src/session.js'
+import { Ledger, isConflictItem } from '../src/ledger.js'
 
 const stops: (() => Promise<void>)[] = []
 afterEach(async () => { for (const stop of stops.splice(0).reverse()) await stop() })
@@ -53,13 +54,16 @@ async function fixture() {
     set.stop(); seam.hub.close(); awareness.destroy(); awareness.doc.destroy(); room.doc.destroy()
     await closeRegistryForDir(dir); rmSync(dir, { recursive: true, force: true })
   })
-  return { room, set, registry, record, base }
+  return { room, set, registry, record, base, session }
 }
 
-it.each(['missing', 'earlier incarnation'])('does not publish a family notice when its reservation is %s', async damage => {
+it.each(['missing', 'earlier incarnation'])('does not publish private family conflict state when its reservation is %s', async damage => {
   const { room, set, registry, record } = await fixture()
   await set.reconcile('intact reservation')
-  expect(room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
+  const publicFamilyFacts = () => [...room.doc.getMap<ConflictSlot>('conflicts').values()]
+    .filter(slot => slot.owner === 'L' && slot.other === record.name && ['conflict', 'possible'].includes(slot.settled))
+  expect(publicFamilyFacts()).toEqual([])
+  expect(openConflicts(room, 'L')).toEqual([])
   const tagFile = join(registry.root, 'tags', `${record.tag}.json`)
   if (damage === 'missing') rmSync(tagFile)
   else {
@@ -68,11 +72,14 @@ it.each(['missing', 'earlier incarnation'])('does not publish a family notice wh
     writeFileSync(tagFile, JSON.stringify({ id: oldId }))
   }
   await set.reconcile('lost current reservation')
-  expect(room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
+  expect(publicFamilyFacts()).toEqual([])
+  expect(openConflicts(room, 'L')).toEqual([])
 })
 
 it('keeps cross-team warnings and clears independent of unrelated historical quarantine', async () => {
-  const { room, set, registry, base } = await fixture()
+  const { room, set, registry, base, session, record } = await fixture()
+  const ledger = new Ledger({ sessionId: () => 'session-L', route: () => ({}) })
+  ledger.bind(session)
   const quarantine = join(registry.root, 'quarantine')
   mkdirSync(quarantine, { recursive: true })
   writeFileSync(join(quarantine, 'w_unreserved_history.json.bad-test'), '{broken old record')
@@ -85,12 +92,20 @@ it('keeps cross-team warnings and clears independent of unrelated historical qua
   room.manifestHead.set('R', { base, fence: '1', coverage: { kind: 'all' }, complete: true,
     level: 'full', excluded: [], rev: 1, semRev: 1, scannedAt: Date.now() })
   await set.reconcile('unrelated history does not withhold warning')
-  const notices = () => room.messages().filter(m => m.type === 'merge-conflict' && m.to === 'L')
-  expect(notices()).toHaveLength(1)
-  expect(notices()[0]).toMatchObject({ priority: 'notify' })
+  expect(openConflicts(room, 'L')).toEqual([
+    expect.objectContaining({ other: 'R', kind: 'merge', priority: 'notify',
+      slots: [expect.objectContaining({ path: 'x', settled: 'conflict' })] }),
+  ])
+  const shown = ledger.open('reply')
+  expect(ledger.select(session, shown).filter(isConflictItem)).toHaveLength(1)
+  ledger.commit(shown)
   entries.clear()
   room.manifestHead.set('R', { ...room.manifestHead.get('R')!, rev: 2, semRev: 2 })
   await set.reconcile('unrelated history does not withhold clear')
-  expect(notices()).toHaveLength(2)
-  expect(notices()[1]).toMatchObject({ clearedFrom: 'conflict', priority: 'fyi' })
+  expect(openConflicts(room, 'L')).toEqual([])
+  expect(ledger.candidates(session).filter(isConflictItem)).toEqual([
+    expect.objectContaining({ status: 'inactive', priority: 'fyi', label: expect.stringContaining('with R') }),
+  ])
+  expect([...room.doc.getMap<ConflictSlot>('conflicts').values()]
+    .filter(slot => slot.owner === 'L' && slot.other === record.name && ['conflict', 'possible'].includes(slot.settled))).toEqual([])
 })

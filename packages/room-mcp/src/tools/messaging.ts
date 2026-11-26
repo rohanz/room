@@ -4,10 +4,10 @@ import { retainedWorkerLines } from '../worker-retained.js'
 import { writeWorkerRecordRef } from '../worker-refs.js'
 import { idleWakeAdvice } from '../hosts/prompt.js'
 import { requireWorkerEvidence } from '../worker-store.js'
-import { answerMatchesQuestion, formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, recordAnswer, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
+import { answerMatchesQuestion, onOpenConflictsChanged, formatMsg, manifestChangers, manifestPaths, messageEndsWait, messageForMe, owed, recordAnswer, scopeCovers, type AnswerMsg, type ChangedMsg, type Msg, type NoteMsg, type PostBody, type Priority, type QuestionMsg, workerLive } from '@room/shared'
 import type { Session } from '../session.js'
 import fs from 'node:fs'
-import type { Batch } from '../ledger.js'
+import { isConflictItem, formatDeliveryItem, type DeliveryItem, type Batch } from '../ledger.js'
 import type { LocalWorker } from '../worker-status.js'
 import { INBOX_BUDGET, moreLine, selectWithin, type Chosen } from '../inbox-budget.js'
 import type { PostResult } from '../post.js'
@@ -30,10 +30,10 @@ const questionPreview = (text: string): string => {
 /** Internal argument supplied by the tool wrapper, never by MCP callers. */
 export const WAIT_SIGNAL = Symbol('room_wait request signal')
 
-const pendingWaits = new WeakMap<Session, Set<(m: Msg) => boolean>>()
+const pendingWaits = new WeakMap<Session, Set<(m: DeliveryItem) => boolean>>()
 
 /** The wake router skips messages that an active room_wait will return. */
-export function waitConsumesMessage(s: Session, m: Msg): boolean {
+export function waitConsumesMessage(s: Session, m: DeliveryItem): boolean {
   return [...(pendingWaits.get(s) ?? [])].some(ends => ends(m))
 }
 
@@ -363,9 +363,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
         const notice = pending instanceof Promise ? await pending : pending
         if (notice) return notice
       }
-      const ends = (x: Session) => (m: Msg) => messageEndsWait(m, waiting(x, m)) || (m.priority === 'interrupt' && forMe(x, m))
-      const render = (x: Session, m: Msg): string | Promise<string> => {
+      const ends = (x: Session) => (m: DeliveryItem) => isConflictItem(m) ? m.to === x.me.name && (m.status === 'open' || m.priority !== 'fyi') : messageEndsWait(m, waiting(x, m)) || (m.priority === 'interrupt' && forMe(x, m))
+      const render = (x: Session, m: DeliveryItem): string | Promise<string> => {
         const workersRoom = x !== s
+        if (isConflictItem(m)) return formatDeliveryItem(m)
         if (!messageEndsWait(m, waiting(x, m))) return `${workersRoom ? 'workers room: ' : ''}${formatMsg(m)}`
         if (m.type === 'answer') return `answered: ${formatMsg(m)}`
         if (m.type === 'done') return mapReady(myWorkers(x), workers => {
@@ -373,17 +374,16 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           const ready = !worker || !workerAlive(x, worker)
           return `${ready ? 'worker done, ready to collect' : 'worker reported done; its process is still exiting (room_collect waits up to 15 s for it)'}: ${formatMsg(m)}`
         })
-        if (m.type === 'merge-conflict') return formatMsg(m)
         if (m.type === 'question') return `${workersRoom ? 'question from a worker' : 'question for you'} (answer it with room_send type=answer inReplyTo=${m.id}, then continue independent work or wait on the blocking dependency): ${formatMsg(m)}`
         return `${workersRoom ? 'workers room' : 'message for you'}: ${formatMsg(m)}`
       }
-      const rank = (m: Msg) => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2
+      const rank = (m: DeliveryItem) => m.priority === 'interrupt' ? 0 : m.type === 'question' ? 1 : 2
       /** The first owed message that ends this wait, reserved into the batch; the rest stay for the inbox. */
       let selected = false
       const take = (): string | undefined | Promise<string> => {
         if (selected) return undefined
         const found = all().flatMap(x => ledger.available(x, batch, ends(x)).map(m => ({ x, m })))
-          .sort((p, q) => rank(p.m) - rank(q.m) || p.m.at - q.m.at)[0]
+          .sort((p, q) => rank(p.m) - rank(q.m) || (p.m.at ?? 0) - (q.m.at ?? 0))[0]
         if (!found) return undefined
         selected = true
         ledger.select(found.x, batch, m => m.id === found.m.id, 'wait')
@@ -394,13 +394,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       if (now0) return now0
       if (offline(s)) return 'offline: room_wait cannot observe new messages until reconnected'
       const ws = rooms.all().find(x => x !== s) ?? null
-      const waiters = new Map<Session, (m: Msg) => boolean>()
+      const waiters = new Map<Session, (m: DeliveryItem) => boolean>()
       for (const x of ws ? [s, ws] : [s]) {
         const callbacks = pendingWaits.get(x) ?? new Set()
         pendingWaits.set(x, callbacks)
         // Wake reservation predicts an incoming valid reply; actual completion requires its recorded relation.
-        const fn = (m: Msg) => ends(x)(m) || (question?.type === 'question' && !!m.to && m.to === x.me.name
-          && answerMatchesQuestion(question, m))
+        const fn = (m: DeliveryItem) => ends(x)(m) || (!isConflictItem(m) && (question?.type === 'question' && !!m.to && m.to === x.me.name
+          && answerMatchesQuestion(question, m)))
         callbacks.add(fn)
         waiters.set(x, fn)
       }
@@ -408,6 +408,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       return await new Promise<string>(resolve => {
         let finished = false
         let timer: ReturnType<typeof setTimeout> | undefined
+        const conflictSubscriptions: (() => void)[] = []
         const finish = (r: string) => {
           if (finished) return
           finished = true
@@ -415,6 +416,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           s.room.claims.unobserve(onClaims)
           s.room.bus.unobserve(onBus)
           ws?.room.bus.unobserve(onBus)
+          for (const unsubscribe of conflictSubscriptions) unsubscribe()
           if (questionId) qRoom.room.doc.off('update', onRecipient)
           signal?.removeEventListener('abort', onAbort)
           for (const [x, fn] of waiters) pendingWaits.get(x)?.delete(fn)
@@ -463,6 +465,7 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           else if (pending) finish(pending)
         }
         s.room.claims.observe(onClaims); s.room.bus.observe(onBus); ws?.room.bus.observe(onBus)
+        for (const x of all()) conflictSubscriptions.push(onOpenConflictsChanged(x.room, onBus))
         if (questionId) qRoom.room.doc.on('update', onRecipient)
         signal?.addEventListener('abort', onAbort, { once: true })
         if (signal?.aborted) onAbort()
@@ -484,17 +487,19 @@ export function createInbox(deps: Pick<HandlerState, 'ledger' | 'rooms' | 'log' 
   const forMe = (s: Session, m: Msg) => messageForMe(s.me, m, { claims: deps.mine(s), inMyAreas: x => msgInMyAreas(s, x) })
   const inbox = (s: Session, batch: Batch): string => {
       const ws = rooms.workers()
-      const shown = ({ s: source, m }: Chosen): Msg => source === s ? m : { ...m, ...('text' in m ? { text: `[workers room] ${m.text}` } : {}) } as Msg
-      const line = (m: Msg) => m.type === 'question'
-        ? `  [${m.id}] QUESTION FOR YOU: ${formatMsg(m)} (reply with room_send type=answer inReplyTo=${m.id})`
-        : `  [${m.id}] ${formatMsg(m)}`
+      const line = (m: DeliveryItem, source = s) => {
+        const text = isConflictItem(m) ? formatDeliveryItem(m) : m.type === 'question'
+          ? `[${m.id}] QUESTION FOR YOU: ${formatMsg(m)} (reply with room_send type=answer inReplyTo=${m.id})`
+          : `[${m.id}] ${formatMsg(m)}`
+        return `  ${source === s ? '' : '[workers room] '}${text}`
+      }
       // The same budget as the hooks: the rest stays owed for the next reply (F-M2).
-      const { chosen, more } = selectWithin(deps.ledger, [s, ...(ws && ws !== s ? [ws] : [])], batch, INBOX_BUDGET, c => line(shown(c)).length + 1, true)
+      const { chosen, more } = selectWithin(deps.ledger, [s, ...(ws && ws !== s ? [ws] : [])], batch, INBOX_BUDGET, c => line(c.m, c.s).length + 1, true)
       if (!chosen.length) return ''
-      const fresh = chosen.map(shown)
-      for (const m of fresh) log(`inbox → ${s.me.name}: ${formatMsg(m)}`)
+      const fresh = chosen.map(c => c.m)
+      for (const m of fresh) log(`inbox → ${s.me.name}: ${formatDeliveryItem(m)}`)
       scheduleInboxWrite()
-      return `[inbox ${fresh.length}]\n${fresh.map(line).join('\n')}${more ? `\n  ${moreLine(more)}` : ''}\n\n`
+      return `[inbox ${fresh.length}]\n${chosen.map(c => line(c.m, c.s)).join('\n')}${more ? `\n  ${moreLine(more)}` : ''}\n\n`
     }
   const affected = async (s: Session, paths: string[], symbols: string[]): Promise<Map<string, string>> => {
       const out = new Map<string, string>()

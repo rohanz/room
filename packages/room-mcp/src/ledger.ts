@@ -7,7 +7,7 @@
 import fs from 'node:fs'
 import path from 'node:path'
 import { createHash, randomUUID } from 'node:crypto'
-import { highestSeq, messageForMe, owed, participantRecord, supersededConflictNotices, type MessageRouteContext, type Msg, type Via } from '@room/shared'
+import { highestSeq, deliveryIndex, isLegacyConflictMessage, messageForMe, owed, participantRecord, openConflicts, onOpenConflictsChanged, formatConflictLine, formatMsg, type MessageRouteContext, type Msg, type Via, type OpenConflict, type Priority, ROOM_STALE_MS } from '@room/shared'
 import { writeAtomic } from './leases.js'
 import { snapshotRead, type WorkerSnapshot } from './worker-store.js'
 import type { WorkerRecord } from './worker-status.js'
@@ -16,6 +16,10 @@ import type { Session } from './session.js'
 /** A reply batch is held until its transport write settles; a hook batch until the hook confirms. */
 const REPLY_LEASE_MS = 60_000
 export const HOOK_LEASE_MS = 10_000
+/** Inactive lines are courtesies: keep at most eight, independently of opening history. */
+const INACTIVE_CONFLICT_LIMIT = 8
+/** Delivered facts for absent openings, independent of the eight presentation courtesies. */
+const SETTLED_CONFLICT_LIMIT = 64
 
 export type BatchKind = 'reply' | 'hook'
 /** A local synthetic item (sharing disclosure, startup notice): delivered like a message, receipted in notices.json. */
@@ -24,7 +28,56 @@ export interface Notice {
   /** A presentation chunk receipts its constituent events, never the chunk's changing membership. */
   receiptIds?: string[]
 }
-export interface Selected { s: Session; m: Msg; via: Via }
+/** A conflict reference shares arbitration with messages, but never masquerades as a bus event. */
+export interface ConflictDelivery {
+  type: 'conflict-state'
+  id: string
+  priority: Priority
+  to: string
+  at?: number
+  status: 'open' | 'inactive'
+  conflict?: OpenConflict
+  label: string
+  fingerprint?: string
+  /** The line carries a wake; its token only correlates delivery with a pending note. */
+  wakeId?: string
+}
+export type DeliveryItem = Msg | ConflictDelivery
+export const isConflictItem = (item: DeliveryItem): item is ConflictDelivery => item.type === 'conflict-state'
+export const formatDeliveryItem = (item: DeliveryItem): string => isConflictItem(item)
+  ? item.conflict ? formatConflictLine(item.conflict) : `[${item.priority}] previous alert no longer active: ${item.label}`
+  : formatMsg(item)
+type ConflictWake = { id: string; priority: Priority; woken?: boolean }
+/** Presentation and wake delivery are independent: a fingerprint never acknowledges a token. */
+type ConflictReceipt = { shown?: string; courtesy?: Priority; wake?: ConflictWake; label: string; at?: number }
+type ConflictBucket = { participant: string; touchedAt?: number; entries: Record<string, ConflictReceipt>; delivered: Record<string, number>; pending?: ConflictReceipt }
+type ConflictReceipts = Record<string, ConflictBucket>
+
+/** Only the current record shape is accepted; uncertainty repeats a still-open wake. */
+function readConflictReceipt(value: unknown): ConflictReceipt | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return
+  const entry = value as ConflictReceipt, wake = entry.wake
+  if (Object.keys(entry).some(key => !['label', 'shown', 'courtesy', 'at', 'wake'].includes(key))
+    || typeof entry.label !== 'string' || entry.shown !== undefined && (typeof entry.shown !== 'string' || !/^[a-f0-9]{64}$/.test(entry.shown))
+    || entry.courtesy !== undefined && !['notify', 'interrupt'].includes(entry.courtesy)
+    || entry.at !== undefined && !Number.isFinite(entry.at)) return
+  if (wake !== undefined && (!wake || typeof wake !== 'object'
+      || Array.isArray(wake) || Object.keys(wake).some(key => !['id', 'priority', 'woken'].includes(key))
+      || typeof wake.id !== 'string' || !wake.id.length
+      || !['notify', 'interrupt'].includes(wake.priority)
+      || wake.woken !== undefined && typeof wake.woken !== 'boolean')) return
+  return entry
+}
+const urgent = (a: Priority, b: Priority): Priority => a === 'interrupt' || b === 'interrupt' ? 'interrupt' : a === 'notify' || b === 'notify' ? 'notify' : 'fyi'
+export interface Selected { s: Session; m: DeliveryItem; via: Via }
+const fingerprint = (text: string) => createHash('sha256').update(text).digest('hex')
+const clearingLabel = (entry: OpenConflict): string => {
+  const first = entry.slots[0]!, paths = [...new Set(entry.slots.map(slot => slot.path))]
+  const scope = entry.kind === 'merge' ? `merge ${paths.slice(0, 2).join(', ')}${paths.length > 2 ? ` and ${paths.length - 2} more files` : ''}`
+    : entry.kind === 'contract' ? `contract ${first.path}:${first.subject ?? 'symbol'}`
+    : entry.kind === 'claims' ? `claims ${first.path}:${first.subject ?? ''}` : `edit in claim ${first.path}`
+  return `${scope.replace(/\0/g, ' / ').slice(0, 180)} with ${entry.other.slice(0, 80)}`
+}
 
 function noticeId(kind: string, text: string): string {
   return `n:${kind}:${createHash('sha256').update(text).digest('hex').slice(0, 16)}`
@@ -70,11 +123,16 @@ export class Ledger {
   private readonly pendingNotices = new Map<string, Notice>()
   private readonly onDelivered = new Map<string, () => void>()
   private delivered?: Record<string, { at: number; via: Via }>
+  private conflictRecord?: { file?: string; receipts: ConflictReceipts; loadedFromDisk: boolean }
+  private conflictsDirty = false
+  private readonly active = new Set<Session>()
   private readonly bound = new WeakSet<Session>()
   private readonly workerSnapshots = new WeakMap<Session, WorkerSnapshot>()
 
   /** Facts supplied by the async attachment/request boundary; callbacks never open storage. */
   supplyWorkers(s: Session, snapshot: WorkerSnapshot): void { this.workerSnapshots.set(s, snapshot) }
+
+  private readonly legacyMailPending = new WeakMap<Session, Set<string>>()
 
   constructor(private readonly o: LedgerOptions) {}
 
@@ -97,17 +155,54 @@ export class Ledger {
 
   /** Seed the cursor at the session's first bind in a room (after its first sync). */
   bind(s: Session): void {
+    this.active.add(s)
     this.cursor(s)
     this.prune(s)
-    if (this.bound.has(s)) return
+    if (this.bound.has(s)) { this.receiptLegacyConflicts(s); return }
     this.bound.add(s)
-    s.room.bus.observe(event => { if (event.changes.delta.some(change => change.delete)) this.prune(s) })
-    const removed = (event: { changes: { keys: Map<string, { action: string }> } }) => {
-      if ([...event.changes.keys.values()].some(change => change.action === 'delete')) this.prune(s)
+    if (this.fenced(s)) this.conflictCandidates(s)
+    // Capture owed openings synchronously: a later clean transaction may precede the wake microtask.
+    // Observation needs no worker launch facts; only delivery waits for them.
+    onOpenConflictsChanged(s.room, () => {
+      if (this.active.has(s) && this.fenced(s)) this.conflictCandidates(s)
+    })
+    this.legacyMailPending.set(s, new Set())
+    deliveryIndex(s.room).onMessagesChanged(changes => {
+      this.queueLegacyConflicts(s, changes)
+      this.receiptLegacyConflicts(s)
+      if ([...changes.values()].some(copies => !copies.length)) this.prune(s)
+    })
+    // One initial scan; subsequent transactions supply only their changed indexed bodies.
+    const initial = new Map<string, Msg[]>()
+    for (const message of [...s.room.mail.values(), ...s.room.messages()]) if (message && typeof message.id === 'string') {
+      const copies = initial.get(message.id) ?? []; copies.push(message); initial.set(message.id, copies)
     }
-    s.room.mail.observe(removed)
-    s.room.outcomes.observe(removed)
+    this.queueLegacyConflicts(s, initial)
+    this.receiptLegacyConflicts(s)
+    s.room.outcomes.observe(event => {
+      if ([...event.changes.keys.values()].some(change => change.action === 'delete')) this.prune(s)
+    })
   }
+
+  private queueLegacyConflicts(s: Session, changes: ReadonlyMap<string, readonly Msg[]>): void {
+    const pending = this.legacyMailPending.get(s)!
+    for (const [id, copies] of changes) {
+      pending.delete(id)
+      if (copies.length && copies.every(isLegacyConflictMessage) && copies.some(message => message.to === s.me.name)) pending.add(id)
+    }
+  }
+
+  /** Only the active holder consumes its own obsolete messages; paused pending IDs track body changes. */
+  private receiptLegacyConflicts(s: Session): void {
+    const pending = this.legacyMailPending.get(s)
+    if (!pending?.size || !this.active.has(s) || !this.fenced(s)) return
+    const seen = s.room.seen(s.me.name), ids = [...pending].filter(id => !seen.has(id) && !s.room.outcomes.has(id))
+    pending.clear()
+    s.room.markSeen(s.me.name, ids, { s: this.o.sessionId(), via: 'reply' })
+  }
+
+  /** Keep receipt recovery through temporary detachment; inactive room buckets age out after seven days. */
+  unbind(s: Session): void { this.active.delete(s); this.flushConflicts() }
 
   /** The highest hub seq `s` had observed at its first bind: only later messages can wake it (MF8). */
   frontier(s: Session): number { return this.cursor(s).frontier }
@@ -116,13 +211,13 @@ export class Ledger {
   reserved(s: Session, id: string): boolean { return this.reservations.has(key(s, id)) }
 
   /** Owed messages of `s` that no live batch holds (nor `batch` itself) and `filter` accepts; nothing is reserved. */
-  available(s: Session, batch: Batch, filter?: (m: Msg) => boolean): Msg[] {
+  available(s: Session, batch: Batch, filter?: (m: DeliveryItem) => boolean): DeliveryItem[] {
     if (batch.settled) return []
     return this.candidates(s).filter(m => !batch.has(s, m.id) && !this.reservations.has(key(s, m.id)) && (!filter || filter(m)))
   }
 
   /** `available()`, reserved into `batch`, to be receipted `via` when the batch commits. */
-  select(s: Session, batch: Batch, filter?: (m: Msg) => boolean, via: Via = batch.kind === 'hook' ? 'hook' : 'reply'): Msg[] {
+  select(s: Session, batch: Batch, filter?: (m: DeliveryItem) => boolean, via: Via = batch.kind === 'hook' ? 'hook' : 'reply'): DeliveryItem[] {
     const chosen = this.available(s, batch, filter)
     if (chosen.length) this.lease(batch)
     for (const m of chosen) {
@@ -133,27 +228,202 @@ export class Ledger {
   }
 
   /** What `s` is owed now, reserved or not: for counts and wake decisions, never a receipt. */
-  candidates(s: Session): Msg[] {
+  candidates(s: Session): DeliveryItem[] {
     if (!this.fenced(s)) return []
+    this.receiptLegacyConflicts(s)
     // A worker's launch and prompt facts must arrive before delivery can choose a frontier.
     if (!this.workerEvidenceReady(s)) return []
     this.prune(s)
     const cursor = this.route(s)
     const prompt = new Set(this.promptIds(s))
-    // A peer's conflict notice that a later one replaced is not owed: the reader gets the current files once.
-    const superseded = supersededConflictNotices([...s.room.mail.values(), ...s.room.messages()])
-    return owed(s.room, s.me, cursor, this.o.route(s), m => !prompt.has(m.id) && !superseded.has(m.id) && (this.o.relevant?.(s, m) ?? true))
+    return [...this.conflictCandidates(s), ...owed(s.room, s.me, cursor, this.o.route(s), m => !prompt.has(m.id) && (this.o.relevant?.(s, m) ?? true))]
+  }
+
+  /** Conflict state uses local receipts beside cursor/notices; it never enters bus/mail/seen. */
+  private conflictStorage(): NonNullable<Ledger['conflictRecord']> {
+    const file = this.file('conflicts.json')
+    if (!this.conflictRecord || this.conflictRecord.file !== file) {
+      let receipts: ConflictReceipts = {}
+      if (file) try {
+        const value = JSON.parse(fs.readFileSync(file, 'utf8'))
+        if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('invalid conflict record')
+        for (const stored of Object.values(value) as ConflictBucket[]) {
+          if (!stored || typeof stored !== 'object' || Object.keys(stored).some(key => !['participant', 'entries', 'delivered', 'pending', 'touchedAt'].includes(key))
+            || typeof stored.participant !== 'string' || !stored.entries || typeof stored.entries !== 'object' || Array.isArray(stored.entries)
+            || !stored.delivered || typeof stored.delivered !== 'object' || Array.isArray(stored.delivered) || Object.values(stored.delivered).some(at => !Number.isFinite(at))
+            || stored.touchedAt !== undefined && !Number.isFinite(stored.touchedAt)
+            || Object.values(stored.entries).some(entry => !readConflictReceipt(entry) || entry.wake?.woken !== undefined)
+            || stored.pending !== undefined && (!readConflictReceipt(stored.pending) || !stored.pending.wake)) throw new Error('invalid conflict record')
+        }
+        receipts = value
+      } catch { /* Missing or unreadable: waking again is safe. */ }
+      const previous = this.conflictRecord
+      for (const [room, memory] of Object.entries(previous?.receipts ?? {})) {
+        const disk = receipts[room]
+        // After the initial bind, this process owns the latest receipts and removals. An
+        // older directory must not resurrect an obligation already shown and forgotten.
+        if (previous?.loadedFromDisk || !disk || disk.participant !== memory.participant) receipts[room] = memory
+        else {
+          const entries = { ...disk.entries }
+          for (const [id, entry] of Object.entries(memory.entries)) {
+            const old = entries[id], wake = entry.wake ?? old?.wake
+            entries[id] = { ...old, ...entry, shown: entry.shown ?? old?.shown,
+              wake: old?.wake && wake ? { ...wake, priority: urgent(old.wake.priority, wake.priority) } : wake }
+          }
+          const delivered = { ...disk.delivered }
+          for (const [id, at] of Object.entries(memory.delivered)) delivered[id] = Math.min(delivered[id] ?? at, at)
+          for (const [id, receipt] of Object.entries(entries)) if (delivered[id] !== undefined && receipt.shown) delete receipt.wake
+          const pending = !memory.pending ? disk.pending : this.pendingConflict(disk.pending, memory.pending)
+          receipts[room] = { ...disk, ...memory, entries, delivered, ...(pending ? { pending } : {}) }
+        }
+      }
+      this.conflictRecord = { file, receipts, loadedFromDisk: previous?.loadedFromDisk === true || file !== undefined }
+      // Even a clean in-memory record must be written to its new backing directory.
+      if (previous) this.conflictsDirty = true
+    }
+    return this.conflictRecord
+  }
+  private conflictBucket(s: Session): ConflictBucket {
+    const all = this.conflictStorage().receipts, stored = all[s.roomName]
+    if (!stored || stored.participant !== s.me.name || !stored.entries || typeof stored.entries !== 'object' || Array.isArray(stored.entries))
+      all[s.roomName] = { participant: s.me.name, entries: {}, delivered: {} }
+    all[s.roomName]!.touchedAt = Date.now()
+    return all[s.roomName]!
+  }
+  /** Persist a whole observed pass, not each opening; a failed write leaves it dirty and blocks waking. */
+  flushConflicts(): boolean {
+    const record = this.conflictStorage()
+    const active = new Set([...this.active].map(s => s.roomName))
+    for (const [room, bucket] of Object.entries(record.receipts)) if (!active.has(room) && !bucket.pending && !Object.values(bucket.entries).some(receipt => receipt.wake)
+      && Date.now() - (bucket.touchedAt ?? 0) >= ROOM_STALE_MS) { delete record.receipts[room]; this.conflictsDirty = true }
+    if (!this.conflictsDirty) return true
+    if (record.file) try { writeAtomic(record.file, record.receipts) }
+    catch (error) { this.o.log?.(`could not write conflict receipts: ${String(error)}`); return false }
+    this.conflictsDirty = false
+    return true
+  }
+  private pendingConflict(previous: ConflictReceipt | undefined, incoming: ConflictReceipt): ConflictReceipt {
+    if (!previous) return { label: incoming.label, at: incoming.at, wake: incoming.wake }
+    if (previous.wake!.id === incoming.wake!.id) return { ...previous, wake: { ...previous.wake!,
+      priority: urgent(previous.wake!.priority, incoming.wake!.priority), woken: previous.wake!.woken || incoming.wake!.woken } }
+    return { label: previous.label, at: previous.at ?? incoming.at,
+      wake: { id: randomUUID(), priority: urgent(previous.wake!.priority, incoming.wake!.priority),
+        woken: previous.wake!.woken === true && incoming.wake!.woken === true } }
+  }
+  private compactConflictReceipts(s: Session, current = openConflicts(s.room, s.me.name)): boolean {
+    const bucket = this.conflictBucket(s), entries = bucket.entries, open = new Set(current.map(entry => entry.id)), inactive: string[] = []
+    let changed = false
+    for (const [id, receipt] of Object.entries(entries)) if (!open.has(id)) {
+      if (receipt.wake && bucket.delivered[id] === undefined) {
+        bucket.pending = this.pendingConflict(bucket.pending, receipt)
+        delete entries[id]; changed = true
+      } else {
+        if (receipt.wake) { receipt.courtesy = receipt.wake.priority; delete receipt.wake; changed = true }
+        if (receipt.shown || receipt.courtesy) inactive.push(id)
+        else { delete entries[id]; changed = true }
+      }
+    }
+    const settled = Object.keys(bucket.delivered).filter(id => !open.has(id)).sort((a, b) => bucket.delivered[a]! - bucket.delivered[b]!)
+    for (const id of settled.slice(0, Math.max(0, settled.length - SETTLED_CONFLICT_LIMIT))) { delete bucket.delivered[id]; changed = true }
+    // Courtesy history is expendable; an unshown owed wake is never evicted.
+    for (const id of inactive.slice(0, Math.max(0, inactive.length - (INACTIVE_CONFLICT_LIMIT - (bucket.pending ? 1 : 0))))) { delete entries[id]; changed = true }
+    return changed
+  }
+  private conflictCandidates(s: Session): ConflictDelivery[] {
+    const current = openConflicts(s.room, s.me.name), bucket = this.conflictBucket(s), entries = bucket.entries
+    const ids = new Set(current.map(entry => entry.id)), result: ConflictDelivery[] = []
+    let changed = false
+    for (const entry of current) {
+      const receipt = entries[entry.id]
+      if (receipt && receipt.label !== clearingLabel(entry)) { receipt.label = clearingLabel(entry); changed = true }
+      const wake = receipt?.wake
+      if (wake && bucket.delivered[entry.id] === undefined && urgent(wake.priority, entry.priority) !== wake.priority) {
+        wake.priority = urgent(wake.priority, entry.priority)
+        changed = true
+      }
+      if (entry.priority !== 'fyi' && bucket.delivered[entry.id] === undefined && !receipt?.wake) {
+        entries[entry.id] = { ...receipt, wake: { priority: entry.priority, id: randomUUID() }, label: clearingLabel(entry),
+          at: Math.max(...entry.slots.map(slot => slot.confirmedAt ?? 0)) || undefined }
+        changed = true
+      }
+    }
+    changed = this.compactConflictReceipts(s, current) || changed
+    for (const entry of current) {
+      const hash = fingerprint(formatConflictLine(entry)), receipt = entries[entry.id]
+      const wake = receipt?.wake, priority = wake ? urgent(entry.priority, wake.priority) : entry.priority
+      if (wake || receipt?.shown !== hash) result.push({ type: 'conflict-state', id: entry.id, priority, to: s.me.name,
+        at: Math.max(...entry.slots.map(slot => slot.confirmedAt ?? 0)) || undefined,
+        status: 'open', conflict: priority === entry.priority ? entry : { ...entry, priority }, label: clearingLabel(entry), fingerprint: hash,
+        wakeId: wake?.id })
+    }
+    for (const [id, receipt] of Object.entries(entries)) if (!ids.has(id) && (receipt.shown || receipt.courtesy)) {
+      result.push({ type: 'conflict-state', id: id + ':inactive', priority: receipt.courtesy ?? 'fyi', to: s.me.name,
+        at: receipt.at, status: 'inactive', label: receipt.label })
+    }
+    const pending = bucket.pending?.wake
+    if (pending) result.push({ type: 'conflict-state', id: 'state-conflict:inactive:' + pending.id, priority: pending.priority,
+      to: s.me.name, at: bucket.pending!.at, status: 'inactive', label: bucket.pending!.label, wakeId: pending.id })
+    if (changed) this.conflictsDirty = true
+    return result
+  }
+  conflictWakeable(s: Session, item: ConflictDelivery): boolean {
+    const bucket = this.conflictBucket(s)
+    return !!item.wakeId && (item.status === 'open' ? bucket.delivered[item.id] === undefined
+      : bucket.pending?.wake?.id === item.wakeId && !bucket.pending.wake.woken)
+  }
+  conflictWakeRecorded(s: Session, id: string): boolean {
+    const bucket = this.conflictBucket(s)
+    return bucket.delivered[id] !== undefined || id === 'state-conflict:inactive:' + bucket.pending?.wake?.id && bucket.pending?.wake?.woken === true
+  }
+  conflictsWoken(items: readonly { s: Session; m: DeliveryItem }[]): void {
+    const changed = new Set<Session>()
+    for (const { s, m } of items) {
+      if (!isConflictItem(m) || !this.fenced(s)) continue
+      const bucket = this.conflictBucket(s)
+      if (m.status === 'open' && m.wakeId) {
+        bucket.delivered[m.id] ??= Date.now(); changed.add(s)
+      }
+      if (m.wakeId && bucket.pending?.wake?.id === m.wakeId) { bucket.pending.wake.woken = true; changed.add(s) }
+    }
+    if (changed.size) {
+      for (const s of changed) this.compactConflictReceipts(s)
+      this.conflictsDirty = true; this.flushConflicts()
+    }
   }
 
   /** Receipts for a confirmed handoff; a late commit for an expired batch still writes (a real handoff). */
   commit(batch: Batch): void {
     if (batch.committed) return
     batch.committed = true
+    const conflictChanged = new Set<Session>()
     const groups = new Map<Session, Map<Via, string[]>>()
     for (const { s, m, via } of batch.items) {
+      if (isConflictItem(m)) {
+        if (!this.fenced(s)) continue
+        const bucket = this.conflictBucket(s), entries = bucket.entries
+        if (m.status === 'open') {
+          const receipt = entries[m.id]
+          if (m.wakeId) {
+            bucket.delivered[m.id] ??= Date.now()
+            if (receipt) delete receipt.wake
+          }
+          if (receipt) delete receipt.courtesy
+          entries[m.id] = { ...receipt, shown: m.fingerprint, label: m.label, at: m.at }
+        } else if (!m.wakeId) {
+          const receipt = entries[m.id.slice(0, -':inactive'.length)]
+          if (receipt) { delete receipt.shown; delete receipt.courtesy }
+        }
+        if (m.wakeId && bucket.pending?.wake?.id === m.wakeId) delete bucket.pending
+        conflictChanged.add(s)
+        continue
+      }
       const byVia = groups.get(s) ?? new Map<Via, string[]>()
       byVia.set(via, [...byVia.get(via) ?? [], m.id])
       groups.set(s, byVia)
+    }
+    if (conflictChanged.size) {
+      for (const s of conflictChanged) this.compactConflictReceipts(s)
+      this.conflictsDirty = true; this.flushConflicts()
     }
     for (const [s, byVia] of groups) {
       if (!this.fenced(s)) { this.o.log?.(`not receipting in ${s.roomName}: this session no longer holds ${s.me.name}`); continue }

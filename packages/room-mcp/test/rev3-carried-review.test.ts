@@ -2,7 +2,7 @@ import { setGitObserver } from '@room/roomd/git'
 import { registryForDir } from '../src/worker-registry.js'
 import { realRepo, setupLead } from './workers-fixture.js'
 import { workerByTag } from './registry-fixture.js'
-import { ConflictSet, type ConflictSlot, slotKey } from '../src/conflict-set.js'
+import { ConflictSet, ConflictSlots, type Evaluation, type ConflictSlot, slotKey } from '../src/conflict-set.js'
 import type { Session } from '../src/session.js'
 import { epochPublication } from '@room/shared/testing'
 import { gitBlobHash, manifestKey, type ManifestEntry } from '@room/shared'
@@ -72,12 +72,15 @@ describe('conflicts on real spawn-carried untracked text', () => {
       const session = { ...t.session, me: { name: owner, kind: 'agent' }, dir: owner === worker.name ? worker.dir : repo,
         post, awareness: { getStates: () => states }, provider: { synced: true }, lease: { fence: () => '1' } } as unknown as Session
       const set = new ConflictSet(session, owner, session, () => {}, 0)
-      try { await set.reconcile('real carried untracked regression') } finally { set.stop() }
+      const settlement = vi.spyOn(ConflictSlots.prototype, 'settle')
+      let evaluated: Evaluation[] = []
+      try { await set.reconcile('real carried untracked regression'); evaluated = settlement.mock.calls.map(([, result]) => result) }
+      finally { settlement.mockRestore(); set.stop() }
       const other = nonPublisher === 'peer' ? 'checkout-editor' : owner === worker.name ? 'rohanz' : worker.name
       return {
         merge: room.doc.getMap<ConflictSlot>('conflicts').get(slotKey(owner, 'merge', other, file)),
         overlap: room.doc.getMap<ConflictSlot>('conflicts').get(slotKey(owner, 'edit-in-claim', other, file)),
-        notices: post.mock.calls.map(call => call[1]),
+        overlapEvaluation: evaluated.find(result => result.owner === owner && result.other === other && result.kind === 'edit-in-claim' && result.path === file),
       }
     }
     return { ...t, repo, worker, original, check }
@@ -91,7 +94,9 @@ describe('conflicts on real spawn-carried untracked text', () => {
       fs.writeFileSync(path.join(f.worker.dir, file), text)
       if (leadEdits) fs.writeFileSync(path.join(f.repo,file), f.original.replace('original line 126', 'lead new line 126'))
       f.a.addClaim({by:f.worker.name,byKind:'agent',path:file,from:126,to:126,intent:'edit carried tracked region',claimedHash:gitBlobHash(text)})
-      expect((await f.check('rohanz')).overlap?.status).toBe(leadEdits?'conflict':'clean')
+      const result = await f.check('rohanz')
+      expect(result.overlapEvaluation).toMatchObject({ owner: 'rohanz', other: f.worker.name, kind: 'edit-in-claim', path: file, status: leadEdits ? 'conflict' : 'clean' })
+      expect(result.overlap?.status).toBe(leadEdits ? 'conflict' : undefined)
     } finally { await f.leadTools.shutdown() }
   })
   it('does not give an unrelated third participant the carried ancestor', async()=>{

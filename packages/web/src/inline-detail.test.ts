@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { JSDOM } from 'jsdom'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { lineAnnotation, lineDetail, type Claim, type ConflictSpan } from '@room/shared'
+import { lineAnnotation, lineDetail, type Claim } from '@room/shared'
 import { renderCodeLines } from './panels.ts'
 import * as tooltip from './tooltip.ts'
 
@@ -16,7 +16,7 @@ beforeEach(() => {
   host = document.querySelector('main')!
 })
 afterEach(() => { vi.restoreAllMocks(); dom.window.close(); vi.unstubAllGlobals() })
-const render = (conflicts: ConflictSpan[] = []) => renderCodeLines(host, lines, ['rohanz'], (_, n) => n === 1 ? [claim] : [], conflicts)
+const render = () => renderCodeLines(host, lines, ['rohanz'], (_, n) => n === 1 ? [claim] : [])
 const rows = () => Array.from(host.querySelectorAll<HTMLElement>('.code-line'))
 const details = () => host.querySelectorAll<HTMLElement>('.inline-detail')
 const key = (el: HTMLElement, key: string) => el.dispatchEvent(new dom.window.KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }))
@@ -76,24 +76,6 @@ it('moves details to another row and supports Enter and Space activation', () =>
   expect(rows()[0].getAttribute('aria-expanded')).toBe('false')
   key(rows()[2], ' ')
   expect(details()).toHaveLength(0)
-})
-it('opens conflict-tag details with both participants, range, resolution and plans', () => {
-  render([{ id: 's', path: 'a.ts', from: 1, to: 2, people: ['rohanz', 'codex'], claims: [claim], claimIds: ['c'], at: 1, events: [], hidden: false, resolvedBy: { how: 'released', who: 'codex', at: 2 } }])
-  const tag = host.querySelector<HTMLButtonElement>('.conflict-tag')!
-  tag.dispatchEvent(new dom.window.Event('pointerenter'))
-  expect(host.querySelector('.line-annotation')?.textContent).toBe('rohanz ↔ codex · resolved')
-  tag.click()
-  expect(details()[0].textContent).toContain('rohanz ↔ codex')
-  expect(details()[0].textContent).toContain('Merged lines 1-2')
-  expect([...details()[0].querySelectorAll('.inline-detail-label')].map(el => el.textContent)).toEqual(['Line', 'Conflict', 'Claims', 'Resolution'])
-  expect(details()[0].textContent).not.toContain('unavailable')
-  expect(details()[0].textContent).toContain('codex released')
-  expect(details()[0].textContent).toContain('add discount')
-  expect(host.querySelector<HTMLElement>('.conflict-bar')!.style.gridRow).toBe('1 / 4')
-  key(tag, ' ')
-  expect(details()).toHaveLength(0)
-  key(tag, 'Enter')
-  expect(details()).toHaveLength(1)
 })
 it('never attaches or shows a floating tooltip from code rendering or interaction', () => {
   const bind = vi.spyOn(tooltip, 'bindTooltip'), show = vi.spyOn(tooltip, 'showTooltip')
@@ -194,7 +176,7 @@ it('leaves short code unfaded when its text ends before the annotation', () => {
 })
 
 it.each([true, false])('uses one pane scroller with pinned edges and detail (merged=%s)', merged => {
-  renderCodeLines(host, lines.map(line => ({ ...line, text: 'long_code '.repeat(100) })), ['rohanz'], undefined, [], merged)
+  renderCodeLines(host, lines.map(line => ({ ...line, text: 'long_code '.repeat(100) })), ['rohanz'], undefined, merged)
   expect(host.querySelectorAll('.code-scroll')).toHaveLength(1)
   expect(rule('.code-scroll')).toContain('overflow-x: auto')
   expect(rule('.code-scroll')).toContain('container-type: inline-size')
@@ -293,14 +275,14 @@ it('only shows an inset keyboard focus ring on the detail', () => {
   expect(rule('.inline-detail:focus-visible')).toContain('box-shadow: inset 0 0 0 2px var(--accent)')
 })
 
-it('keeps a row with conflict and resolved tags as tall as a plain row', () => {
+it('keeps a row with multiple conflict tags as tall as a plain row', () => {
   renderCodeLines(host, lines.map((line, i) => ({ ...line, conflict: i === 0, conflictPair: ['rohanz', 'codex'] as [string, string] })), ['rohanz', 'codex'])
   const [tagged, plain] = rows()
   const slot = tagged.querySelector<HTMLElement>('.line-tags')!
-  const resolved = document.createElement('button')
-  resolved.className = 'conflict-tag resolved'
-  resolved.textContent = 'resolved'
-  slot.append(resolved)
+  const second = document.createElement('button')
+  second.className = 'conflict-tag'
+  second.textContent = 'conflict'
+  slot.append(second)
   expect(slot.children).toHaveLength(2)
   const style = document.createElement('style')
   style.textContent = ['.line-tags', '.line-band', '.conflict-tag'].map(selector => selector + ' {' + rule(selector) + '}').join('\n')
@@ -335,7 +317,7 @@ it.each([true, false])('keeps long-plan details within clientWidth on expansion 
     disconnect = disconnect
   })
   const plan = 'x'.repeat(600)
-  renderCodeLines(host, lines, ['rohanz'], () => [{ ...claim, plans: [{ kind: 'add', symbol: 'discount', detail: plan }] }], [], merged)
+  renderCodeLines(host, lines, ['rohanz'], () => [{ ...claim, plans: [{ kind: 'add', symbol: 'discount', detail: plan }] }], merged)
   const scroller = host.querySelector<HTMLElement>('.code-scroll')!
   let clientWidth = 800
   vi.spyOn(scroller, 'clientWidth', 'get').mockImplementation(() => clientWidth)

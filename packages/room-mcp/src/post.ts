@@ -14,8 +14,6 @@ export interface PostOpts {
   id?: string
   /** An automatic post (conflict, pushed, completion, copy, relay, idle-claims notice): never refused over a cap. */
   auto?: boolean
-  /** A bridged worker's notice also goes to its lead; this is the priority of the lead's copy when it differs. */
-  leadPriority?: 'notify'
 }
 export type PostResult<T extends Msg = Msg> =
   | { ok: true; msg: T; seq?: number; duplicate?: boolean }

@@ -5,8 +5,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, manifestKey, owed, participantRecord, type ManifestEntry } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey, openConflicts, participantRecord, type ManifestEntry } from '@room/shared'
 import { epochPublication } from '@room/shared/testing'
+import { Bridge } from '../src/bridge.js'
 import { ConflictSet } from '../src/conflict-set.js'
 import type { Session } from '../src/session.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
@@ -15,6 +16,8 @@ import { mutateWorkerFixture } from './fixtures/worker-record.js'
 import { slotKey } from '../src/conflict-set.js'
 import { seedRegistryWorker, finishWorker } from './registry-fixture.js'
 import { hubSeam } from './fixtures/hub.js'
+import { Ledger } from '../src/ledger.js'
+import { WakeReconciler } from '../src/wake-reconciler.js'
 
 const stops: (() => unknown)[] = []
 afterEach(async () => { vi.restoreAllMocks(); for (const stop of stops.splice(0).reverse()) await stop() })
@@ -78,28 +81,59 @@ async function setup(names = ['L+a', 'L+b']) {
     stops.push(() => set.stop())
     return set
   }
-  const notices = (name: string) => localRoom.messages().filter(m => m.type === 'merge-conflict' && m.to === name)
-  return { dir, team, local, records, registry, checker, notices, session, publish }
+  const conflicts = (name: string) => openConflicts(localRoom, name).filter(c => c.kind === 'merge')
+  return { dir, team, local, records, registry, checker, conflicts, session, publish }
 }
 
 it('does not duplicate a same-lead worker pair already checked in the private room', async () => {
   const t = await setup(), [a] = t.records
   const ordinary = t.checker(t.session(t.local.room, a.name, t.local.roomName))
   await ordinary.reconcile('ordinary local worker comparison')
-  expect(t.notices(a.name)).toHaveLength(1)
+  expect(t.conflicts(a.name)).toHaveLength(1)
   await t.checker(t.team, a.name, t.local).reconcile('projected comparison of the same pair')
-  expect(t.notices(a.name)).toHaveLength(1)
+  expect(t.conflicts(a.name)).toHaveLength(1)
+})
+
+it('tells both sibling workers once and never publishes their private conflict in the team room', async () => {
+  const t = await setup(), wakes = new Map<string, string[]>()
+  const bridge = new Bridge(t.team, t.local, { registry: t.registry })
+  bridge.start(); stops.push(() => bridge.stop())
+  for (const record of t.records) {
+    const s = t.session(t.local.room, record.name, t.local.roomName)
+    const ledger = new Ledger({ sessionId: () => `session-${record.name}`, route: () => ({}) })
+    ledger.bind(s)
+    const sends: string[] = []; wakes.set(record.name, sends)
+    const wake = new WakeReconciler({ ledger, bound: () => ({ id: `session-${record.name}`, host: 'codex' }),
+      sessionDir: () => undefined, windowMs: 0, turnProbe: { busy: async () => false },
+      send: async (_target, text) => { sends.push(text); return 'queue' } })
+    wake.attach(s); stops.push(() => wake.stop())
+    const checker = t.checker(s)
+    await checker.reconcile('private sibling conflict')
+    await checker.reconcile('unchanged private sibling conflict')
+  }
+  await vi.waitFor(() => { for (const sends of wakes.values()) expect(sends).toHaveLength(1) })
+  for (const record of t.records) {
+    expect(t.conflicts(record.name)).toHaveLength(1)
+    await t.checker(t.team, record.name, t.local).reconcile('projected family comparison')
+  }
+  await bridge.sync()
+  expect(t.local.room.messages().filter(message => message.type === 'note' && message.text?.startsWith('[team room]'))).toEqual([])
+  expect(t.team.room.doc.getMap('conflicts').size).toBe(0)
+  expect(t.team.room.messages().filter(m => ['merge-conflict', 'conflict', 'contract'].includes(m.type))).toEqual([])
+  await finishWorker(t.local, t.records[1].tag)
+  await t.registry.beginRetirement(t.records[1].id, await t.registry.archiveOf(t.records[1], { summary: 'collected' }))
+  await projectWorkers(t.local, t.registry, 'L', 'joined')
+  expect(t.conflicts(t.records[0].name)).toEqual([])
 })
 
 it('creates no sibling projection copies to leave owed after either worker retires', async () => {
   const t = await setup(), [a, b] = t.records
   for (const worker of [a, b]) await t.checker(t.team, worker.name, t.local).reconcile('same-lead projections')
-  expect(t.notices('L')).toEqual([])
+  expect(t.conflicts('L')).toEqual([])
   await finishWorker(t.local, b.tag)
   await t.registry.beginRetirement(b.id, await t.registry.archiveOf(b, { summary: 'collected' }))
   await projectWorkers(t.local, t.registry, 'L', 'joined')
-  const pending = owed(t.local.room, t.local.me, { frontier: 0, routed: new Set() }, {})
-    .filter(m => m.type === 'merge-conflict')
+  const pending = openConflicts(t.local.room, t.local.me.name)
   expect(pending).toEqual([])
 })
 
@@ -107,7 +141,7 @@ it('keeps a projected owner out of the ordinary lead comparison in the team room
   const t = await setup()
   t.publish(t.team.room, 'L', 'lead edit\n')
   await t.checker(t.team).reconcile('lead and own projected worker')
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict' && m.to === 'L')).toEqual([])
+  expect(openConflicts(t.team.room, 'L')).toEqual([])
 })
 
 
@@ -116,10 +150,10 @@ it('compares a lead and its own local workers exactly only in their private room
   t.publish(t.local.room, 'L', 'lead edit\n')
   t.publish(t.team.room, 'L', 'lead edit\n')
   await t.checker(t.local).reconcile('private lead and workers')
-  expect(t.notices('L')).toHaveLength(2)
-  expect(t.notices('L').every(m => m.priority === 'notify')).toBe(true)
+  expect(t.conflicts('L')).toHaveLength(2)
+  expect(t.conflicts('L').every(m => m.priority === 'notify')).toBe(true)
   await t.checker(t.team).reconcile('team lead and workers')
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
+  expect(openConflicts(t.team.room)).toEqual([])
 })
 
 it('still warns a teammate from another family about the projected local worker', async () => {
@@ -128,9 +162,9 @@ it('still warns a teammate from another family about the projected local worker'
   const observer = t.session(t.team.room, 'Kieran', t.team.roomName)
   applyAwarenessUpdate(observer.awareness, encodeAwarenessUpdate(t.team.awareness, [t.team.awareness.clientID]), 'test')
   await t.checker(observer).reconcile('other family')
-  const notices = t.team.room.messages().filter(m => m.type === 'merge-conflict' && m.to === 'Kieran')
-  expect(notices).toHaveLength(2)
-  expect(notices.every(m => m.priority === 'fyi')).toBe(true)
+  const conflicts = openConflicts(t.team.room, 'Kieran').filter(c => c.kind === 'merge')
+  expect(conflicts).toHaveLength(2)
+  expect(conflicts.every(m => m.priority === 'fyi')).toBe(true)
 })
 
 
@@ -139,8 +173,8 @@ it('uses exact registry projection ownership even for names without a lead prefi
   t.publish(t.team.room, 'L', 'lead edit\n')
   await t.checker(t.team).reconcile('ordinary team')
   for (const record of t.records) await t.checker(t.team, record.name, t.local).reconcile('projected sibling')
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
-  expect(t.local.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
+  expect(openConflicts(t.team.room)).toEqual([])
+  expect(openConflicts(t.local.room)).toEqual([])
 })
 
 
@@ -151,8 +185,8 @@ it('keeps a retiring worker in its family while its team projection awaits withd
   await t.registry.beginRetirement(a.id, await t.registry.archiveOf(a, { summary: 'collected' }))
   await t.checker(t.team).reconcile('retirement before team withdrawal')
   await t.checker(t.team, a.name, t.local).reconcile('retiring projected owner')
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
-  expect(t.notices('L')).toEqual([])
+  expect(openConflicts(t.team.room)).toEqual([])
+  expect(t.conflicts('L')).toEqual([])
 })
 
 
@@ -175,7 +209,7 @@ it.each(['missing', 'malformed', 'unreadable', 'quarantined'])('blocks a %s own-
     })
   }
   await expect(t.checker(t.team).reconcile('damaged ownership evidence')).rejects.toThrow(/blocked|unavailable/)
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
+  expect(openConflicts(t.team.room)).toEqual([])
 })
 
 
@@ -199,8 +233,8 @@ it.each(['restarted', 'released', 'expired', 'offline'])('leaves an own %s proje
   // This is the ordinary updating-input path, not an accepted-family exclusion.
   expect(t.team.room.doc.getMap('conflicts').get(slotKey('L', 'merge', worker.name, '*'))).toMatchObject({ status: 'unknown', settled: 'none' })
   await t.checker(t.team, worker.name, t.local).reconcile('stale projected owner')
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
-  expect(t.local.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
+  expect(openConflicts(t.team.room)).toEqual([])
+  expect(openConflicts(t.local.room)).toEqual([])
 })
 
 it('compares a where-here worker as an ordinary team participant', async () => {
@@ -214,8 +248,8 @@ it('compares a where-here worker as an ordinary team participant', async () => {
   const view = t.team.room.workerViews.get(worker.id)!
   t.team.room.workerViews.set(worker.id, { ...view, mode: 'here' })
   await t.checker(t.team).reconcile('worker joined the team room itself')
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict' && m.to === 'L')).toEqual([
-    expect.objectContaining({ priority: 'notify', path: 'x' }),
+  expect(openConflicts(t.team.room, 'L')).toEqual([
+    expect.objectContaining({ priority: 'notify', slots: [expect.objectContaining({ path: 'x' })] }),
   ])
 })
 
@@ -233,8 +267,8 @@ it('does not treat a wrong-fence projection claim as family', async () => {
   t.team.room.participants.set('R\0git', record.git!)
   t.team.room.manifestHead.set('R', head)
   await t.checker(t.team).reconcile('ordinary publication still compared')
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([
-    expect.objectContaining({ to: 'L', priority: 'notify' }),
+  expect(openConflicts(t.team.room, 'L')).toEqual([
+    expect.objectContaining({ owner: 'L', priority: 'notify' }),
   ])
 })
 
@@ -245,8 +279,8 @@ it.each(['different', 'empty'])('requires matching nonempty participant and mani
   t.team.room.participants.set('R\0proj', { projectedFrom: identity === 'empty' ? '' : 'w_claim', projectedBy: 'L' })
   t.team.room.manifestHead.set('R', { ...t.team.room.manifestHead.get('R')!, projectedFrom: identity === 'empty' ? '' : 'w_different', projectedBy: 'L' })
   await t.checker(t.team).reconcile('inconsistent projection is not family')
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([
-    expect.objectContaining({ to: 'L', priority: 'notify' }),
+  expect(openConflicts(t.team.room, 'L')).toEqual([
+    expect.objectContaining({ owner: 'L', priority: 'notify' }),
   ])
 })
 
@@ -261,5 +295,5 @@ it('states the trust boundary: a member can copy a public lead fence and suppres
   await t.checker(t.team).reconcile('matching public projection facts')
   expect(t.team.room.doc.getMap('conflicts').get(slotKey('L', 'merge', 'R', 'x'))).toBeUndefined()
   expect(t.team.room.doc.getMap('conflicts').get(slotKey('L', 'merge', 'R', '*'))).toBeUndefined()
-  expect(t.team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
+  expect(openConflicts(t.team.room)).toEqual([])
 })

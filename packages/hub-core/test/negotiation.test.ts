@@ -248,3 +248,10 @@ describe('release diagnostics do not select the contract', () => {
     expect(selectContract(ad({ release: 'same' }), ad({ release: 'same', schemas: { read: [3], write: [3] } }), { activeSchema: 3 }).ok).toBe(false)
   })
 })
+
+it('negotiates with the 0.17.55 hosted advertisement without its removed optional notice capability', () => {
+  const hosted = ad({ capabilities: { ...CURRENT_COMPAT.capabilities, 'room.notice-lifecycle': [1] } })
+  const selection = selected(ad(), hosted)
+  expect(selection.capabilities).not.toHaveProperty('room.notice-lifecycle')
+  expect(validateSelection(selection, ad(), hosted, policy)).toEqual(selection)
+})

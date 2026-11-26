@@ -24,3 +24,5 @@ export * from './schema.js'
 export * from './retired-env.js'
 export * from './repo-lock.js'
 export { completedPublicationOf } from './worker-memory.js'
+
+export * from './conflicts.js'

@@ -4,10 +4,10 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
-import { RoomDoc, gitBlobHash, manifestKey, type ManifestEntry } from '@room/shared'
+import { RoomDoc, openConflicts, gitBlobHash, manifestKey, type ManifestEntry } from '@room/shared'
 import { epochPublication } from '@room/shared/testing'
 import type { Baseline } from '@room/roomd/baseline'
-import { ConflictSet, slotKey } from '../src/conflict-set.js'
+import { ConflictSet, ConflictSlots, slotKey } from '../src/conflict-set.js'
 import type { Session } from '../src/session.js'
 
 it.each(['both-delete', '1999-carried', '2000-carried'] as const)('checks carried candidate control %s', async scenario => {
@@ -40,11 +40,17 @@ it.each(['both-delete', '1999-carried', '2000-carried'] as const)('checks carrie
   }
   const session = { room, awareness: { getStates: () => states }, provider: { synced: true, on() {}, off() {} }, me: { name: 'L', kind: 'agent' }, dir, post, lease: { fence: () => '1' } } as unknown as Session
   const set = new ConflictSet(session, 'L', session, () => {}, 0, person => person === 'W' ? { baseline, lead: 'L' } : undefined)
+  const publication = vi.spyOn(ConflictSlots.prototype, 'settlePair')
   try {
     const start = performance.now(); await set.reconcile(scenario)
     const slots = room.doc.getMap<{ status: string; why?: string }>('conflicts')
     if (scenario === '2000-carried') expect(slots.get(slotKey('L', 'merge', 'W', '*'))).toMatchObject({ status: 'unknown', why: 'too many changed paths to compare' })
-    else expect(slots.get(slotKey('L', 'merge', 'W', path))).toMatchObject({ status: scenario === 'both-delete' ? 'clean' : 'conflict' })
+    else if (scenario === 'both-delete') {
+      const completed = publication.mock.calls.filter(([owner, other]) => owner === 'L' && other === 'W').flatMap(([, , results]) => [...results.values()])
+      expect(completed.find(result => result.path === path)).toMatchObject({ status: 'clean' })
+      expect(slots.has(slotKey('L', 'merge', 'W', path))).toBe(false)
+      expect(openConflicts(room, 'L')).toEqual([])
+    } else expect(slots.get(slotKey('L', 'merge', 'W', path))).toMatchObject({ status: 'conflict' })
     console.log(JSON.stringify({ scenario, elapsedMs: performance.now() - start, slots: slots.size }))
-  } finally { set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) }
+  } finally { publication.mockRestore(); set.stop(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) }
 })
