@@ -1,5 +1,5 @@
 import { createTools, fakeSession, lead, pair, reportDone, dir, base } from './workers-fixture.js'
-import { holderFence, participantRecord, type Identity } from '@room/shared'
+import { holderFence, participantRecord, type Identity, type ConflictSlot } from '@room/shared'
 import { setParticipantBase, hubAppend } from '@room/shared/testing'
 import { describe, expect, it } from 'vitest'
 import { join } from 'node:path'
@@ -52,7 +52,7 @@ async function scenario() {
   })
   const lua = identity('lua-cancel').name
   for (const [from, to] of [[1129, 1218], [1463, 1706], [1833, 1886], [2415, 2473]]) a.addClaim({ by: lua, byKind: 'agent', path: 'src/classes/redis-queue-backend.ts', from, to, intent: `cancelled outcome decoding for lines ${from}-${to}, removeOnCancel ARGV` })
-  a.doc.getMap('conflicts').set('fixture', { kind: 'merge', owner: lead.name, other: lua, path: 'src/interfaces/queue-backend.ts', status: 'open', inputs: '', factId: 'f', settled: 'conflict', epoch: 1, lines: [453] })
+  a.doc.getMap<ConflictSlot>('conflicts').set('fixture', { kind: 'merge', owner: lead.name, other: lua, path: 'src/interfaces/queue-backend.ts', status: 'conflict', inputs: '', factId: 'f', settled: 'conflict', openId: 'fixture', endpoints: [{ name: lead.name }, { name: lua }], fence: holderFence(participantRecord(a, lead.name)?.holder)!, checkedAt: Date.now(), confirmedAt: Date.now(), lines: [453] })
   const revision = (n: string) => `REQUIREMENT REVISION 2 (retry-cancelled-v1): ${n} please resume and implement the follow-up. It replaces the earlier "not supported" wording; keep the public API stable and add tests for retrying cancelled jobs.`
   // Earlier traffic the lead has already read: its own interrupts and the workers' replies to it.
   for (const tag of ['tests-docs', 'flows', 'types-api']) hubAppend(a, lead, { type: 'note', to: identity(tag).name, priority: 'interrupt', text: revision(tag) } as never)
@@ -93,7 +93,7 @@ describe('room_state for a lead with workers (2026-11-10 benchmark scenario)', (
       expect(out).toMatch(/^\[inbox 1\]\n.*rohanz\+tests-docs → rohanz's agent: done: tests-docs/)
       expect(out).toContain('open claims (4):')
       expect(count(out, 'rohanz+lua-cancel · src/classes/redis-queue-backend.ts:')).toBe(4)
-      expect(out).toContain('src/interfaces/queue-backend.ts with rohanz+lua-cancel at lines 453')
+      expect(out).toContain("src/interfaces/queue-backend.ts conflicts with rohanz+lua-cancel's version at lines 453")
       // Daemon lifetime detail only under check=true or while the daemon is unreachable.
       expect(out).not.toContain('local daemon:')
       // Files once, on the participant line.

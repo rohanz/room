@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import * as Y from 'yjs'
 import { RoomDoc } from './doc.js'
+import { openConflicts, type ConflictSlot } from './conflicts.js'
 import { manifestKey } from './manifest.js'
 import { participantsView } from './views.js'
 import type { RetiredWorker, WorkerView } from './types.js'
@@ -38,6 +39,23 @@ const live = (room: RoomDoc, name: string) => ({
 })
 
 describe('retireWorker(id): retirement keyed by worker ID (registry §12)', () => {
+  it.each(['unknown', 'holder', 'projection'] as const)('retiring an older id preserves an unknown successor when the name evidence is %s', authority => {
+    const room = new RoomDoc(), old = record()
+    const slot = (id?: string): ConflictSlot => ({ owner: old.name, other: 'peer', kind: 'merge', path: 'x',
+      status: 'conflict', settled: 'conflict', inputs: 'i', factId: 'f', openId: id ?? 'unqualified', fence: '1', checkedAt: 1,
+      endpoints: [{ name: old.name, ...(id ? { workerId: id } : {}) }, { name: 'peer' }] })
+    const conflicts = room.doc.getMap<ConflictSlot>('conflicts')
+    conflicts.set('successor', slot('w_new')); conflicts.set('old', slot(old.id)); conflicts.set('name-only', slot())
+    if (authority === 'holder') room.participants.set(`${old.name}\0holder`, holder(old.id))
+    if (authority === 'projection') room.participants.set(`${old.name}\0proj`, { projectedFrom: old.id, projectedBy: 'lead' })
+    room.retireWorker(old.id, old, ignore)
+    expect(conflicts.has('successor')).toBe(true)
+    expect(conflicts.has('old')).toBe(false)
+    expect(conflicts.has('name-only')).toBe(authority === 'unknown')
+    expect(openConflicts(room, old.name).some(entry => entry.slots.some(value => value.openId === 'w_new'))).toBe(true)
+    room.doc.destroy()
+  })
+
   it('removes all live state under the name in one transaction, releases claims, and archives once per id', () => {
     const room = new RoomDoc(), r = record()
     room.workerViews.set(r.id, view(r.id))
@@ -102,7 +120,10 @@ describe('retireWorker(id): retirement keyed by worker ID (registry §12)', () =
     room.workerViews.set('w_new', view('w_new', old.name, 10))
     room.participants.set(`${old.name}\u0000holder`, holder('w_new'))
     populate(room, old.name)
-    room.doc.getMap('conflicts').set(`${old.name}\u0000merge\u0000teammate\u0000a.ts\u0000`, { owner: old.name, status: 'conflict' })
+    room.doc.getMap('conflicts').set(`${old.name}\u0000merge\u0000teammate\u0000a.ts\u0000`, {
+      owner: old.name, other: 'teammate', kind: 'merge', path: 'a.ts', status: 'conflict', settled: 'conflict',
+      openId: 'successor-opening', endpoints: [{ name: old.name, workerId: 'w_new' }, { name: 'teammate' }], inputs: 'i', factId: 'f', fence: '1', checkedAt: 1,
+    })
     room.retireWorker(old.id, old, ignore)
     expect(live(room, old.name)).toEqual({ claims: 1, scope: true, head: true, manifest: true, git: true, overlay: true, graph: true })
     expect(room.workerViews.has('w_new')).toBe(true)

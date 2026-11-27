@@ -37,6 +37,17 @@ it('keeps coordination by value, excludes live text and unknown future types, an
   source.destroy(); wire.destroy(); restored.destroy()
 })
 
+it('leaves conflict state to surviving replicas and re-evaluation rather than copying stale values', () => {
+  const source = new RoomDoc()
+  source.doc.getMap('conflicts').set('opening', { openId: 'old-opening', settled: 'conflict' })
+  const before = Y.encodeStateAsUpdate(source.doc)
+  const { restored } = restore(source.doc)
+  try {
+    expect(restored.doc.getMap('conflicts').size).toBe(0)
+    expect(Y.encodeStateAsUpdate(source.doc)).toEqual(before)
+  } finally { source.doc.destroy(); restored.doc.destroy() }
+})
+
 it('keeps exactly the receipts that bus, mail and outcomes reference: a shown question survives 2,500 later messages (SF5)', () => {
   const source = new RoomDoc()
   const name = 'lead+worker / encoded'

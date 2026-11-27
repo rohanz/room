@@ -10,6 +10,7 @@
  */
 import { highestSeq, type Msg } from '@room/shared'
 import type { CompanyState } from './company.js'
+import { isConflictItem, type DeliveryItem } from './ledger.js'
 import type { Session } from './session.js'
 
 export interface SoloGateOptions {
@@ -37,11 +38,11 @@ export class SoloGate {
   }
 
   /** Whether a message may wake this session or reach its hooks now; company and workers are read once per call. */
-  audible(s: Session): (m: Msg) => boolean {
+  audible(s: Session): (m: DeliveryItem) => boolean {
     const workers = this.o.ownWorkers(s)
     this.observe(s, this.o.company(s), workers)
     const since = this.since.get(s)
-    return m => (m.from === s.me.name && m.fromKind === 'human')
+    return m => isConflictItem(m) || (m.from === s.me.name && m.fromKind === 'human')
       // The worker is the company its notice needs, even once it has exited (its done or failure report).
       || workerNotice(m, workers)
       || (since !== undefined && (m.from !== 'room' || (m.seq ?? 0) > since))

@@ -200,10 +200,10 @@ export function bindIdentity(conn: EmitterLike, login: string, onDrop: (login: s
 
 const PARTICIPANT_MAPS = ['overlays', 'deleted', 'overlayAt', 'scopes', 'graphs', 'colors', 'bases'] as const
 /**
- * Narrow exceptions for Room-authored notices. They are client-authored and are not authorship proof: any
+ * Narrow exception for Room-authored notes. They are client-authored and are not authorship proof: any
  * authenticated member can forge them, so ordinary participant speech never belongs here.
  */
-const TRUSTED_ROOM_MESSAGE_TYPES = new Set(['conflict', 'merge-conflict', 'contract', 'note'])
+const TRUSTED_ROOM_MESSAGE_TYPES = new Set(['note'])
 
 function syncUpdate(buf: Uint8Array): Uint8Array | undefined {
   try {

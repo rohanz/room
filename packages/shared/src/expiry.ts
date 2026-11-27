@@ -6,6 +6,7 @@
 import type * as Y from 'yjs'
 import { participantRecord, type ReleasePoster, type RoomDoc } from './doc.js'
 import { ROOM_STALE_MS, type ParticipantView } from './views.js'
+import { conflictEndReason, type ConflictSlot } from './conflicts.js'
 
 /** For messages only; ROOM_STALE_MS in views.ts is the rule. */
 export const ROOM_STALE_DAYS = ROOM_STALE_MS / (24 * 60 * 60 * 1000)
@@ -94,10 +95,12 @@ export function expireParticipant(room: RoomDoc, name: string, origin: unknown, 
   const prefix = `${name}\u0000`
   const dropOwned = (map: Y.Map<unknown>) => { for (const key of [...map.keys()]) if (key.startsWith(prefix)) map.delete(key) }
   room.doc.transact(() => {
+    const evidence = { expiredParticipants: new Set([name]) }
+    const conflicts = room.doc.getMap<ConflictSlot>('conflicts')
+    for (const [key, slot] of conflicts) if (conflictEndReason(room, slot, evidence)) conflicts.delete(key)
     dropOwned(room.participants)
     dropOwned(room.doc.getMap('manifest'))
     room.doc.getMap('manifestHead').delete(name)
-    dropOwned(room.doc.getMap('conflicts'))
     room.clearWorkerCoordination(name, `expired after ${ROOM_STALE_DAYS} days offline`, post)
     room.expiry.delete(name)
   }, origin)

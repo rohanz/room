@@ -5,11 +5,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 import * as Y from 'yjs'
-import { RoomDoc, gitBlobHash, manifestKey, type ParticipantSnapshot } from '@room/shared'
+import { RoomDoc, openConflicts, gitBlobHash, manifestKey, type ParticipantSnapshot } from '@room/shared'
 import { epochPublication } from '@room/shared/testing'
 import type { Session } from '../src/session.js'
-import { Ledger } from '../src/ledger.js'
+import { Ledger, isConflictItem, formatDeliveryItem } from '../src/ledger.js'
 import { hubSeam } from './fixtures/hub.js'
+import { recordEvaluations } from './fixtures/conflict-evaluations.js'
 import { ConflictSet, ConflictSlots, slotKey, type ConflictSlot, type Evaluation } from '../src/conflict-set.js'
 
 function fixture(realHub = false) {
@@ -39,10 +40,12 @@ function fixture(realHub = false) {
   const session = { room, dir, post, me: { name: 'A', kind: 'agent' }, awareness: { getStates: () => states },
     provider: { synced: true, on() {}, off() {} }, lease: { fence: () => '1' } } as unknown as Session
   const set = new ConflictSet(session, 'A', session, () => {}, 0, () => undefined)
+  const evaluated = recordEvaluations(set)
   vi.spyOn(set as unknown as { budget(): Promise<void> }, 'budget').mockResolvedValue()
   const slots = room.doc.getMap<ConflictSlot>('conflicts')
   const files = () => [...slots.values()].filter(s => s.owner === 'A' && s.other === 'B' && s.kind === 'merge' && s.path !== '*')
-  return { room, set, slots, files, edit, post, states, session, cleanup() { set.stop(); seam?.hub.close(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) } }
+  return { room, set, slots, files, edit, post, states, session, evaluated: evaluated.results,
+    cleanup() { evaluated.stop(); set.stop(); seam?.hub.close(); room.doc.destroy(); rmSync(dir, { recursive: true, force: true }) } }
 }
 
 describe('whole pair file publication', () => {
@@ -62,7 +65,8 @@ describe('whole pair file publication', () => {
       await f.set.reconcile('move conflict from a to b')
       expect(local).toEqual([['b']])
       expect(remote).toEqual([['b']])
-      expect(f.files().map(s => [s.path, s.status])).toEqual([['a', 'clean'], ['b', 'conflict']])
+      expect(f.files().map(s => [s.path, s.status])).toEqual([['b', 'conflict']])
+      expect(f.evaluated.filter(result => result.path === 'a').at(-1)).toMatchObject({ status: 'clean' })
     } finally { replica.destroy(); f.cleanup() }
   })
 
@@ -98,7 +102,7 @@ describe('whole pair file publication', () => {
       f.slots.observe(() => observed.push(f.files().map(s => `${s.path}:${s.status}`).sort()))
       await f.set.reconcile('complete but uncheckable files')
       expect(observed).toEqual([['a:possible', 'b:unknown', 'c:conflict']])
-      expect(f.post.mock.calls.some(([, body]) => body.type === 'merge-conflict' && body.path === 'c')).toBe(true)
+      expect(openConflicts(f.room, 'A').some(entry => entry.slots.some(slot => slot.path === 'c'))).toBe(true)
     } finally { f.cleanup() }
   })
 
@@ -120,10 +124,10 @@ describe('whole pair file publication', () => {
       expect(mkdir).toHaveBeenCalledTimes(2)
       expect(observed.every(result => JSON.stringify(result) === JSON.stringify(['a:possible', 'b:unknown']))).toBe(true)
       expect(observed).toHaveLength(2)
-      const messages = f.room.messages().filter(m => m.type === 'merge-conflict')
+      const messages = openConflicts(f.room, 'A')
       expect(messages).toHaveLength(1)
-      expect(messages[0]).toMatchObject({ path: 'a', priority: 'fyi' })
-      expect(ledger.candidates(f.session).filter(m => m.type === 'merge-conflict').map(m => m.id)).toEqual([messages[0]!.id])
+      expect(messages[0]).toMatchObject({ slots: [{ path: 'a' }], priority: 'fyi' })
+      expect(ledger.candidates(f.session).filter(m => isConflictItem(m)).map(m => m.id)).toEqual([messages[0]!.id])
       expect(f.slots.get(slotKey('A', 'merge', 'B', 'b'))).toMatchObject({ status: 'unknown', settled: 'none' })
     } finally { mkdir.mockRestore(); f.cleanup() }
   })
@@ -137,6 +141,7 @@ describe('whole pair file publication', () => {
       f.edit('A', 'a', 'mine\n'); f.edit('B', 'a', 'peer\n')
       f.edit('A', 'b', 'same\n'); f.edit('B', 'b', 'same\n')
       await f.set.reconcile('initial completed conflict')
+      const firstId = openConflicts(f.room, 'A')[0]!.id
       const batch = ledger.open('reply')
       expect(ledger.select(f.session, batch).map(m => m.priority)).toEqual(['notify'])
       ledger.commit(batch)
@@ -144,16 +149,17 @@ describe('whole pair file publication', () => {
       f.edit('B', 'a', 'mine\n'); f.edit('B', 'b', 'changed\n')
       mkdir = vi.spyOn(fs, 'mkdtempSync').mockImplementation(() => { throw new Error('ENOSPC') })
       await f.set.reconcile('clear a; b cannot be checked')
-      expect(f.slots.get(slotKey('A', 'merge', 'B', 'a'))).toMatchObject({ status: 'clean', peerEpisode: 1 })
+      expect(f.slots.has(slotKey('A', 'merge', 'B', 'a'))).toBe(false)
+      expect(f.evaluated.filter(result => result.path === 'a').at(-1)).toMatchObject({ status: 'clean' })
       expect(f.slots.get(slotKey('A', 'merge', 'B', 'b'))).toMatchObject({ status: 'unknown' })
       mkdir.mockRestore()
       f.edit('B', 'b', 'same\n'); f.edit('B', 'a', 'peer\n')
       await f.set.reconcile('storage recovered; a conflicts again')
-      const notifications = f.room.messages().filter(m => m.type === 'merge-conflict' && m.priority === 'notify')
-      expect(notifications).toHaveLength(2)
-      expect(notifications[1]!.id).not.toBe(notifications[0]!.id)
-      expect(f.slots.get(slotKey('A', 'merge', 'B', 'a'))).toMatchObject({ status: 'conflict', peerEpisode: 2 })
-      expect(ledger.candidates(f.session).filter(m => m.type === 'merge-conflict' && m.priority === 'notify').map(m => m.id)).toEqual([notifications[1]!.id])
+      const notifications = openConflicts(f.room, 'A')
+      expect(notifications).toHaveLength(1)
+      expect(notifications[0]!.id).not.toBe(firstId)
+      expect(f.slots.get(slotKey('A', 'merge', 'B', 'a'))).toMatchObject({ status: 'conflict' })
+      expect(ledger.candidates(f.session).filter(m => isConflictItem(m) && m.priority === 'notify').map(m => m.id)).toEqual([notifications[0]!.id])
     } finally { mkdir?.mockRestore(); f.cleanup() }
   })
 
@@ -173,7 +179,7 @@ describe('whole pair file publication', () => {
       f.slots.observe(() => observed.push(f.files().map(s => `${s.path}:${s.status}`).sort()))
       await f.set.reconcile('one failed read')
       expect(observed).toEqual([['a:conflict', 'b:unknown']])
-      expect(ledger.candidates(f.session).filter(m => m.type === 'merge-conflict')).toMatchObject([{ path: 'a', priority: 'notify' }])
+      expect(ledger.candidates(f.session).filter(m => isConflictItem(m))).toMatchObject([{ type: 'conflict-state', conflict: { text: expect.stringContaining('a conflicts') }, priority: 'notify' }])
     } finally { f.cleanup() }
   })
 
@@ -207,7 +213,7 @@ describe('whole pair file publication', () => {
       await expect(f.set.reconcile('files complete; claims fail')).rejects.toThrow('claims phase failed')
       expect(claims).toHaveBeenCalledOnce()
       expect(f.files()).toMatchObject([{ path: 'a', status: 'conflict' }])
-      expect(ledger.candidates(f.session).filter(m => m.type === 'merge-conflict')).toMatchObject([{ path: 'a', priority: 'notify' }])
+      expect(ledger.candidates(f.session).filter(m => isConflictItem(m))).toMatchObject([{ type: 'conflict-state', conflict: { text: expect.stringContaining('a conflicts') }, priority: 'notify' }])
     } finally { f.cleanup() }
   })
 
@@ -237,9 +243,9 @@ describe('whole pair file publication', () => {
       moved.mockRestore()
       f.edit('B', 'a', 'peer\n'); f.edit('B', 'b', 'same\n')
       await f.set.reconcile('original conflict, now on stable inputs')
-      expect(f.slots.get(slotKey('A', 'merge', 'B', 'a'))?.peerEpisode).toBe(1)
-      expect(f.room.messages().filter(m => m.type === 'merge-conflict')).toHaveLength(1)
-      expect(ledger.candidates(f.session).filter(m => m.type === 'merge-conflict')).toHaveLength(0)
+      expect(f.slots.get(slotKey('A', 'merge', 'B', 'a'))?.openId).toBe(prior.openId)
+      expect(f.room.messages()).toHaveLength(0)
+      expect(ledger.candidates(f.session).filter(m => isConflictItem(m))).toHaveLength(0)
     } finally { f.cleanup() }
   })
 
@@ -257,8 +263,9 @@ describe('whole pair file publication', () => {
       expect(f.slots.get(slotKey('A', 'merge', 'B', '*'))?.status).toBe('unknown')
       f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, complete: true })
       await f.set.reconcile('manifest complete')
-      expect(f.files()).toMatchObject([{ path: 'a', status: 'clean' }])
+      expect(f.files()).toEqual([])
       expect(f.slots.has(slotKey('A', 'merge', 'B', '*'))).toBe(false)
+      expect(f.evaluated.filter(result => result.path === 'a').at(-1)).toMatchObject({ status: 'clean' })
     } finally { f.cleanup() }
   })
 
@@ -269,12 +276,12 @@ describe('whole pair file publication', () => {
       f.room.manifest.get(manifestKey('B', '1'))!.set('a', { change: 'M', state: 'held', held: 'scope', at: 1, fence: '1' })
       await f.set.reconcile('completed unreadable result')
       const prior = f.files()
-      const text = f.post.mock.calls.find(([, body]) => body.type === 'merge-conflict')![1].text
+      const text = openConflicts(f.room, 'A')[0]!.text
       f.post.mockClear()
       f.room.manifestHead.set('B', { ...f.room.manifestHead.get('B')!, complete: false })
       await f.set.reconcile('manifest arriving')
       expect(f.files()).toEqual(prior)
-      expect(f.post.mock.calls.filter(([, body]) => body.type === 'merge-conflict').map(([, body]) => body.text)).toEqual([text])
+      expect(openConflicts(f.room, 'A').map(entry => entry.text)).toEqual([text])
     } finally { f.cleanup() }
   })
 
@@ -282,7 +289,7 @@ describe('whole pair file publication', () => {
     const room = new RoomDoc()
     let valid = true
     const post = vi.fn().mockResolvedValue({ ok: true })
-    const slots = new ConflictSlots(room, post, '1', Date.now, () => {}, post, () => valid)
+    const slots = new ConflictSlots(room, '1', Date.now, () => valid)
     const results = new Map<string, Evaluation>()
     for (let i = 0; i < 64; i++) {
       const path = `file-${i}`

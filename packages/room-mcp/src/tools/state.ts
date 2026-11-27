@@ -70,7 +70,7 @@ export function createHandlerState(ctx: ToolCtx): HandlerState {
     }
     return {
       stop() {
-        wakes.detach(s); unwatch(); hooks?.stop(); watcher?.stop()
+        wakes.detach(s); ledger.unbind(s); unwatch(); hooks?.stop(); watcher?.stop()
         if (hooks && primaryHooks === hooks) primaryHooks = null
         if (bridge) { bridge.stop(preserveBridgeFacts); if (roomBridge === bridge) roomBridge = null }
       },

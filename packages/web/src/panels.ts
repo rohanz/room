@@ -1,13 +1,14 @@
+import { currentConflicts, conflictLocationText } from './conflicts.ts'
 import { subscribeRender } from './scheduler.ts'
 import { LARGE_LINES, PAGE, planWindows, type WindowOptions } from './line-window.ts'
 import { inlineDetails } from './inline-detail.ts'
 import {
   RoomDoc,
   manifestHeadOf,
-  conflictSpanStatus,
-  deriveConflictSpans,
+  formatConflictLine,
+  formatConflictEvidence,
+  type OpenConflict,
   activityLabel,
-  type ConflictSpan,
   areaMembershipSummary,
   colorFor,
   splitParticipants,
@@ -33,7 +34,7 @@ export { deriveParticipants, type Participant, type ParticipantInput } from '@ro
 import { presences, type Conn } from './conn.ts'
 import { Editor } from './editor.ts'
 import { classifyNWay, unifiedDiffLines, type MergedLine } from './merged.ts'
-import { collapseConflictTimeline, groupEpisodes, type Episode, type TimelineItem } from './timeline.ts'
+import { timelineEntries, groupEpisodes, type Episode, type TimelineItem } from './timeline.ts'
 import { manifestPeople, readWebVersion, versionGap, webChangedPaths, webCoverage } from './manifest-reader.ts'
 
 export const h = <K extends keyof HTMLElementTagNameMap>(
@@ -241,7 +242,7 @@ export const TIMELINE_WINDOW = 30
 export const TIMELINE_PRIORITIES = ['interrupt', 'notify', 'fyi'] as const
 export type TimelinePriority = typeof TIMELINE_PRIORITIES[number]
 
-interface PriorityTimelineEntry { message: Pick<Msg, 'priority'>; conflict?: ConflictSpan }
+interface PriorityTimelineEntry { message: Pick<Msg, 'priority'> }
 
 /** Count priorities and filter them before taking the visible timeline window. */
 export function filterPriorityTimeline<T extends PriorityTimelineEntry>(entries: readonly T[], selected: ReadonlySet<TimelinePriority>, windowSize = TIMELINE_WINDOW): { counts: Record<TimelinePriority, number>; matching: T[]; window: T[] } {
@@ -249,7 +250,7 @@ export function filterPriorityTimeline<T extends PriorityTimelineEntry>(entries:
   const matching: T[] = []
   for (const entry of entries) {
     counts[entry.message.priority]++
-    if (entry.conflict || selected.has(entry.message.priority)) matching.push(entry)
+    if (selected.has(entry.message.priority)) matching.push(entry)
   }
   return { counts, matching, window: matching.slice(-windowSize) }
 }
@@ -444,27 +445,21 @@ function lineElement(line: MergedLine, names: readonly string[], prefix = '', cl
   return row
 }
 
-function resolutionLabel(span: ConflictSpan): string {
-  const r = span.resolvedBy
-  return r ? `resolved · ${r.who ? `${r.who} ` : ''}${r.how} · ${clockTime(r.at)}` : `${span.merges === 'clean' ? 'overlap' : 'conflict'} · ${span.people.join(' ↔ ')}`
-}
-
-export function conflictCard(span: ConflictSpan, expanded?: Set<string>): HTMLElement {
-  const details = h('details', { open: expanded?.has(span.id) ?? false },
-    h('summary', {}, `${span.events.length} events`),
-    ...span.events.map(m => h('div', { class: 'timeline-item' }, h('time', {}, clockTime(m.at)), ' · ', ...messageBody(m))))
-  details.ontoggle = () => { if (details.open) expanded?.add(span.id); else expanded?.delete(span.id) }
-  return h('article', { class: `conflict-card${span.resolvedBy ? ' resolved' : ''}` },
-    h('strong', {}, span.people.join(' ↔ ') || 'Claim conflict'),
-    h('div', {}, `Opened ${clockTime(span.at)} · ${span.path}${span.from !== undefined ? `:${span.from}-${span.to}` : ' · range unavailable'}`),
-    h('div', {}, resolutionLabel(span)), details)
+export function conflictCard(conflict: OpenConflict): HTMLElement {
+  return h('article', { class: 'conflict-card' },
+    h('strong', {}, [conflict.owner, conflict.other].join(' ↔ ')),
+    h('div', {}, formatConflictLine(conflict)),
+    ...conflict.slots.flatMap(slot => [
+      ...conflictLocationText(slot).map(text => h('div', { class: 'conflict-evidence muted' }, text)),
+      h('div', { class: 'conflict-evidence muted' }, (conflict.slots.length > 1 ? slot.path + ' · ' : '') + formatConflictEvidence(slot)),
+    ]))
 }
 
 // Replacing the host invalidates pending frames, including selection changes to empty files.
-export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true, room?: RoomDoc, state: CodeWindowState = {}): void {
+export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, merged = true, room?: RoomDoc, state: CodeWindowState = {}): void {
   state.expandedLines ??= new Map<number, string>()
   if (lines.length <= LARGE_LINES) {
-    renderCodeBatch(host, lines, names, claimsAt, conflicts, merged, room, 0, state.expandedLines)
+    renderCodeBatch(host, lines, names, claimsAt, merged, room, 0, state.expandedLines)
     return
   }
   state.expanded ??= new Set<string>()
@@ -487,7 +482,7 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
           const begin = from, end = Math.min(segment.to, from + PAGE)
           jobs.push(() => {
             const temp = h('div')
-            renderCodeBatch(temp, lines.slice(begin, end), names, claimsAt, conflicts, merged, room, begin, state.expandedLines)
+            renderCodeBatch(temp, lines.slice(begin, end), names, claimsAt, merged, room, begin, state.expandedLines)
             const batchPane = temp.firstElementChild as HTMLElement
             content.append(...Array.from(batchPane.children))
             shown += end - begin
@@ -525,9 +520,9 @@ export function renderCodeLines(host: HTMLElement, lines: readonly (MergedLine &
   paint()
 }
 
-function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, conflicts: readonly ConflictSpan[] = [], merged = true, room?: RoomDoc, offset = 0, expandedLines?: Map<number, string>): void {
+function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { prefix?: string })[], names: readonly string[], claimsAt?: ClaimsAt, merged = true, room?: RoomDoc, offset = 0, expandedLines?: Map<number, string>): void {
   const rows = lines.map((line, i) => lineElement(line, names, line.prefix, claimsAt, merged ? offset + i + 1 : undefined, room, expandedLines, offset + i))
-  const spans: { start: number; end: number; people: readonly string[]; detail: string; resolution?: string; resolved: boolean; claimOnly?: boolean; overlap?: boolean; textConflict?: boolean }[] = []
+  const regions: { start: number; end: number; people: readonly string[]; detail: string; status: string }[] = []
   for (let i = 0; i < lines.length; i++) {
     if (!lines[i].conflict) continue
     const start = i
@@ -539,42 +534,8 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
         if (line !== undefined) for (const claim of claimsAt?.(person, line) ?? []) intents.set(claim.id, person + ': ' + claim.intent + (claim.plans?.length ? ` (plans: ${formatPlans(claim.plans)})` : ''))
       }
     }
-    spans.push({ start, end: i, people: pair, detail: pair.join(' ↔ ') + `\nMerged lines ${offset + start + 1}-${offset + i + 1}\nUnresolved: both sides changed these lines\n` + ([...intents.values()].join('\n') || 'Claim intents unavailable'), resolved: false, textConflict: true })
+    regions.push({ start, end: i, people: pair, detail: pair.join(' ↔ ') + `\nMerged lines ${offset + start + 1}-${offset + i + 1}\nUnresolved: both sides changed these lines\n` + ([...intents.values()].join('\n') || 'Claim intents unavailable'), status: 'Unresolved: both sides changed these lines' })
   }
-  for (const s of conflicts) {
-    if (s.hidden || s.from === undefined || s.to === undefined) continue
-    const indices = lines.flatMap((line, i) => sourceLines(line, names).filter(([person]) => s.people.includes(person)).some(([, n]) => n !== undefined && n >= s.from! && n <= s.to!) ? [i] : [])
-    if (!indices.length) continue
-    const start = indices[0], end = indices.at(-1)!
-    const regionClaims = new Map(s.claims.map(c => [c.id, c]))
-    for (const i of indices) for (const [person, n] of sourceLines(lines[i], names)) {
-      if (n !== undefined) for (const c of claimsAt?.(person, n) ?? []) regionClaims.set(c.id, c)
-    }
-    const claimOnly = merged && s.claims.some(a => s.claims.some(b => a.by !== b.by && a.path === b.path && a.from <= b.to && b.from <= a.to))
-    const people = [...new Set([...s.people, ...[...regionClaims.values()].map(c => c.by)])]
-    const detail = people.join(' ↔ ') + '\n' + s.path + ':' + s.from + '-' + s.to + '\n' +
-      (s.resolvedBy ? resolutionLabel(s) : claimOnly ? 'Unresolved: both claimed' : conflictSpanStatus(s)) + '\n' +
-      people.map(person => {
-        const cs = [...regionClaims.values()].filter(c => c.by === person)
-        return cs.length ? cs.map(c => person + ': ' + c.intent + (c.plans?.length ? ' (plans: ' + formatPlans(c.plans) + ')' : '')).join('\n') : person + ': intent unavailable'
-      }).join('\n')
-    // Text conflicts own their marker, including any intersecting claim details.
-    const textRegions = merged ? spans.filter(r => r.textConflict && !r.resolved && r.start <= end && r.end >= start && r.people.every(p => people.includes(p))) : []
-    if (textRegions.length && !s.resolvedBy) {
-      for (const r of textRegions) r.detail += '\n' + detail
-      // Keep claim-only portions outside the text conflict visible in amber.
-      let run = -1
-      for (let i = start; i <= end + 1; i++) {
-        const uncovered = i <= end && !textRegions.some(r => i >= r.start && i <= r.end)
-        if (uncovered && run < 0) run = i
-        if (!uncovered && run >= 0) { spans.push({ start: run, end: i - 1, people, detail, resolved: false, claimOnly, overlap: s.merges === 'clean' }); run = -1 }
-      }
-    } else spans.push({ start, end, people, detail, resolution: s.resolvedBy ? resolutionLabel(s) : undefined, resolved: !!s.resolvedBy, claimOnly, overlap: s.merges === 'clean' })
-  }
-  // Prefer the recorded region's richer tooltip over its duplicate merge preview.
-  const regions = spans.filter((s, index) => !spans.some((other, j) => j > index &&
-    other.start === s.start && other.end === s.end && other.resolved === s.resolved &&
-    other.people.length === s.people.length && other.people.every(p => s.people.includes(p))))
   // All rows share the widest line; the pane owns scrolling and both edges stick.
   const text = h('div', { class: 'line-text' }, ...rows)
   text.style.gridRow = '1 / ' + (lines.length + 1)
@@ -601,42 +562,33 @@ function renderCodeBatch(host: HTMLElement, lines: readonly (MergedLine & { pref
       owners: authors(lines[i], names),
       claims: sourceLines(lines[i], names).flatMap(([person, n]) => n === undefined ? [] : claimsAt?.(person, n) ?? []),
       conflicts: regions.filter(s => s.start <= i && s.end >= i).map(s => ({
-        people: s.people, resolved: s.resolved, overlap: s.overlap && !s.claimOnly, resolution: s.resolution,
+        people: s.people,
         range: `Merged lines ${offset + s.start + 1}-${offset + s.end + 1}`,
-        status: s.resolved ? 'Resolved' : s.textConflict ? 'Unresolved: both sides changed these lines' : s.claimOnly ? 'Unresolved: both claimed' : conflictSpanStatus({ merges: s.overlap ? 'clean' : undefined }),
+        status: s.status,
       })),
     }))
   const laneEnds: number[] = []
   const tagOffsets = new Map<typeof regions[number], { text: string; detail: string }>()
-  regions.sort((a, b) => a.start - b.start || Number(a.resolved) - Number(b.resolved) || a.end - b.end)
-  for (const start of new Set(regions.map(s => s.start))) {
-    const group = regions.filter(s => s.start === start)
-    const resolved = group.filter(s => s.resolved)
-    const collapse = resolved.length > 1
-    for (const s of group) {
-      if (collapse && s.resolved && s !== resolved[0]) continue
-      tagOffsets.set(s, {
-        text: collapse && s.resolved ? resolved.length + ' resolved' : s.resolved ? 'resolved' : s.claimOnly ? 'both claimed' : s.overlap ? 'overlap' : 'conflict',
-        detail: collapse && s.resolved ? resolved.map(r => r.detail).join('\n\n') : s.detail,
-      })
-    }
-  }
+  regions.sort((a, b) => a.start - b.start || a.end - b.end)
+  for (const s of regions) tagOffsets.set(s, {
+    text: 'conflict',
+    detail: s.detail,
+  })
   regions.forEach(s => {
     let lane = laneEnds.findIndex(end => end < s.start)
     if (lane === -1) lane = laneEnds.length
     laneEnds[lane] = s.end
-    const bar = h('div', { class: 'conflict-bar' + (s.claimOnly || s.overlap ? ' claim-overlap' : '') + (s.resolved ? ' resolved' : '') })
+    const bar = h('div', { class: 'conflict-bar' })
     const tag = tagOffsets.get(s)
     if (tag) {
-      const label = h('button', { class: 'conflict-tag' + (s.resolved ? ' resolved' : s.claimOnly || s.overlap ? ' claim-overlap' : ''), ariaLabel: tag.detail }, tag.text)
+      const label = h('button', { class: 'conflict-tag', ariaLabel: tag.detail }, tag.text)
       bindRows[s.start](label)
       tagSlots[s.start].append(label)
     }
     bar.style.gridRow = s.start + 1 + ' / ' + (s.end + 2)
     bar.style.gridColumn = String(lane + 1)
     for (let i = s.start; i <= s.end; i++) {
-      rows[i].classList.add(s.resolved ? 'resolved-conflict-line' : s.claimOnly || s.overlap ? 'claim-overlap-line' : 'conflict-line')
-      if (s.claimOnly) rows[i].classList.add('claim-overlap-line')
+      rows[i].classList.add('conflict-line')
     }
     bars.push({ bar, start: s.start, end: s.end })
     gutter.append(bar)
@@ -739,17 +691,16 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
     personSelect.hidden = tab === 'Merged'
     compareLabel.hidden = tab !== 'Diff'
 
-    const conflicts = deriveConflictSpans(conn.room.messages(), conn.room.openClaims()).filter(s => s.path === selected.path)
     // Text computations and annotations have separate invalidation: new claims must
     // repaint gutters, but cannot make us repeat an unchanged merge or diff.
-    const paint = (names: string[], texts: (string | undefined)[], compute: () => MergedLine[], merged: boolean, spans = conflicts) => {
+    const paint = (names: string[], texts: (string | undefined)[], compute: () => MergedLine[], merged: boolean) => {
       const inputKey = JSON.stringify([selected.path, tab, names, texts.map(textIdentity)])
       if (cached?.key !== inputKey) cached = { key: inputKey, lines: compute() }
       const claims = conn.room.claimsFor(selected.path)
-      const domKey = JSON.stringify([inputKey, windowKey, claims, spans, names.map(name => colorFor(name, conn.room))])
+      const domKey = JSON.stringify([inputKey, windowKey, claims, names.map(name => colorFor(name, conn.room))])
       if (paintedKey === domKey) return
       const claimsAt: ClaimsAt = (owner, n) => claims.filter(c => c.by === owner && n >= c.from && n <= c.to)
-      renderCodeLines(host, cached.lines, names, claimsAt, spans, merged, conn.room, windowState)
+      renderCodeLines(host, cached.lines, names, claimsAt, merged, conn.room, windowState)
       paintedKey = domKey
     }
     if (tab === 'File') {
@@ -803,7 +754,7 @@ export function centrePanel(conn: Conn, focus: FocusState): HTMLElement {
       const base = mergeable.map(({ name }) => conn.room.baseText(name, bases[0]!, selected.path)).find(text => text !== undefined)
       if (base === undefined) return empty(`PARTIAL · base text not in the room${gaps.length ? '; ' + gaps.join('; ') : ''}`)
       const versions = mergeable.map(({ name, version }) => ({ name, text: version.kind === 'deleted' ? '' : 'text' in version ? version.text ?? '' : '' }))
-      paint(mergeable.map(v => v.name), [base, ...versions.map(v => v.text)], () => classifyNWay(base, versions), true, conflicts.filter(s => s.people.every(p => active.includes(p))))
+      paint(mergeable.map(v => v.name), [base, ...versions.map(v => v.text)], () => classifyNWay(base, versions), true)
       return
     }
 
@@ -887,9 +838,6 @@ export function messageBody(message: Msg): (Node | string | null)[] {
     case 'claim': return [h('strong', {}, 'claimed '), h('span', { class: 'mono' }, `${message.path}:${message.from_line}-${message.to_line}`), ` · ${message.intent}${message.plans?.length ? ` ${displayPlans(message.plans)}` : ''}`]
     case 'release': return [h('strong', {}, 'released '), h('span', { class: 'mono' }, message.path), message.summary ? ` · ${message.summary}` : '', message.unfulfilled?.length ? h('span', { class: 'unfulfilled' }, ` not done: ${formatPlans(message.unfulfilled)}`) : null]
     case 'changed': return [h('strong', {}, 'changed '), h('span', { class: 'mono' }, message.paths.join(', ')), ` · ${message.summary}`, message.symbols?.length ? h('span', { class: 'symbol-list' }, message.symbols.join(', ')) : null]
-    case 'merge-conflict':
-    case 'conflict': return [h('strong', {}, message.type === 'conflict' && message.merges === 'clean' ? 'overlap ' : 'conflict '), h('span', { class: 'mono' }, message.path), ` · ${message.text}`]
-    case 'contract': return [h('strong', {}, 'contract change '), h('span', { class: 'mono' }, message.path), ` · ${message.text}`]
     case 'note': return [message.text]
     case 'question': return [h('strong', {}, 'asked '), message.text]
     case 'answer': return [h('strong', {}, 'answered '), message.text]
@@ -898,6 +846,7 @@ export function messageBody(message: Msg): (Node | string | null)[] {
     case 'plan': return [h('strong', {}, `${message.status} plan `), formatPlans([message.plan]), message.replacedBy ? ` → now ${formatPlans([message.replacedBy])}` : '', ` · ${message.text}`]
     case 'scope': return [message.summary]
     case 'done': return [h('strong', {}, `worker ${message.tag} finished `), message.summary, message.changed.length ? h('span', { class: 'mono' }, ` · ${message.changed.join(', ')}`) : null]
+    default: return [] // Stored messages from older plugins may have retired kinds.
   }
 }
 
@@ -932,7 +881,9 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
   const filters = h('div', { class: 'filter-chips' })
   const priorityFilters = h('div', { class: 'priority-filters', role: 'group', ariaLabel: 'Filter by priority' })
   const list = h('div', { class: 'timeline-list' })
-  const scroll = h('div', { class: 'timeline-scroll scroll' }, list)
+  const conflictList = h('div', { class: 'open-conflict-list' })
+  const openSection = h('section', { class: 'open-conflicts', ariaLabel: 'Open conflicts' }, h('h3', {}, 'Open conflicts'), conflictList)
+  const scroll = h('div', { class: 'timeline-scroll scroll' }, openSection, list)
   const element = h('aside', { class: 'timeline' }, h('div', { class: 'timeline-head' }, h('div', { class: 'panel-title' }, 'Timeline'), filters, priorityFilters), scroll)
   let areaFilter: string | null = null
   let selectedPriorities = readTimelinePriorities()
@@ -940,27 +891,26 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
   let followNewest = true
   const seen = new Set<string>()
   let primed = false
-  const expandedConflicts = new Set<string>()
   scroll.onscroll = () => { followNewest = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 48 }
 
   const render = () => {
     const shouldFollow = followNewest
     const messages = conn.room.messages()
-    const entries = collapseConflictTimeline(messages, conn.room.openClaims())
-    const allEpisodes = groupEpisodes(entries.filter(e => !e.conflict).map(e => e.message))
+    const entries = timelineEntries(conn.room)
+    const conflicts = currentConflicts(conn.room)
+    const allEpisodes = groupEpisodes(entries.map(e => e.message))
     const areaPersonMatching = entries.filter(e => focus.person
-      ? e.message.from === focus.person || e.conflict?.people.includes(focus.person) || ('to' in e.message && e.message.to === focus.person)
+      ? e.message.from === focus.person || ('to' in e.message && e.message.to === focus.person)
       : !areaFilter || ('area' in e.message && e.message.area === areaFilter) || conn.room.scope(e.message.from)?.area === areaFilter || allEpisodes.some(ep => ep.area === areaFilter && ep.items.some(it => it.message.id === e.message.id)))
     const filtered = filterPriorityTimeline(areaPersonMatching, selectedPriorities, windowSize)
     const window = filtered.window
-    const conflicts = window.flatMap(e => e.conflict ? [e.conflict] : [])
     const ids = new Set(window.map(e => e.message.id))
     const episodes = clipTimelineEpisodes(allEpisodes, ids)
     // The area/people row is chosen from the window as it would be with every priority on, so a priority chip never moves it.
     const chipWindow = areaPersonMatching.slice(-windowSize)
     const chipEpisodes = clipTimelineEpisodes(allEpisodes, new Set(chipWindow.map(e => e.message.id)))
     const groups = participantGroups(conn)
-    const prominentPeople = new Set([...groups.active.map(p => p.name), ...chipEpisodes.map(e => e.person), ...timelinePeople(chipWindow.flatMap(e => e.conflict ? e.conflict.events : [e.message])), ...(focus.person ? [focus.person] : [])])
+    const prominentPeople = new Set([...groups.active.map(p => p.name), ...conflicts.flatMap(c => [c.owner, c.other]), ...chipEpisodes.map(e => e.person), ...timelinePeople(chipWindow.map(e => e.message)), ...(focus.person ? [focus.person] : [])])
     // Named areas are what people filter by; directory areas derived from paths wait behind "Show all".
     const prominentAreas = new Set([...[...groups.active.flatMap(p => p.scope ? [p.scope.area] : []), ...chipEpisodes.map(e => e.area)].filter(area => !area.endsWith('/')), ...(areaFilter ? [areaFilter] : [])])
     // Everything present at first paint is "old"; only later arrivals animate in.
@@ -991,11 +941,12 @@ export function timelinePanel(conn: Conn, focus: FocusState): HTMLElement {
       return button
     }))
     const visible = episodes
-    const cards = conflicts.filter(s => (!focus.person || s.people.includes(focus.person)) && (!areaFilter || s.people.some(p => conn.room.scope(p)?.area === areaFilter)))
-    list.replaceChildren(...[...visible.map(e => ({ at: e.at, el: episodeCard(e, seen, conn.room) })), ...cards.map(s => ({ at: s.at, el: conflictCard(s, expandedConflicts) }))].sort((a, b) => a.at - b.at).map(x => x.el))
+    const cards = conflicts.filter(s => (!focus.person || [s.owner, s.other].includes(focus.person)) && (!areaFilter || [s.owner, s.other].some(p => conn.room.scope(p)?.area === areaFilter)))
+    conflictList.replaceChildren(...(cards.length ? cards.map(conflictCard) : [h('p', { class: 'muted' }, 'No open conflicts')]))
+    list.replaceChildren(...visible.map(e => episodeCard(e, seen, conn.room)))
     if (filtered.matching.length > window.length) list.prepend(h('button', { class: 'timeline-more', onclick: () => { windowSize += TIMELINE_WINDOW; render() } }, 'Show older events'))
     focus.setTimelinePeople([...prominentPeople].sort())
-    if (!visible.length && !cards.length) {
+    if (!visible.length) {
       const hidden = TIMELINE_PRIORITIES.filter(priority => !selectedPriorities.has(priority))
       list.append(h('div', { class: 'empty-note muted' }, h('div', {}, 'No matching episodes'), areaPersonMatching.length && !filtered.matching.length && hidden.length ? h('div', {}, `Hidden priorities: ${hidden.join(', ')}`) : null))
     }

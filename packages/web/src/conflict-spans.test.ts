@@ -1,426 +1,178 @@
-import { deriveConflictSpans } from '@room/shared'
-/// <reference types="node" />
-import { readFileSync } from 'node:fs'
-import { afterEach, expect, it, vi } from 'vitest'
-import { colorFor, lineAnnotation, type Claim, type ConflictSpan, type Msg } from '@room/shared'
-import { collapseConflictTimeline } from './timeline.ts'
+import { JSDOM } from 'jsdom'
+import { gitMergeFile } from '../../room-mcp/src/merge.js'
 import { classifyNWay } from './merged.ts'
-import { conflictCard, renderCodeLines } from './panels.ts'
+import * as merged from './merged.ts'
+import { publish } from './test-manifest.ts'
+import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { RoomDoc, formatConflictLine, openConflicts, type Claim, type ConflictKind, type ConflictSlot, type Msg } from '@room/shared'
+import { currentConflicts } from './conflicts.ts'
+import { timelineEntries, groupEpisodes } from './timeline.ts'
+import { boardPanel } from './board.ts'
+import { conflictCard, createFocusState, centrePanel, renderCodeLines, timelinePanel } from './panels.ts'
+import type { Conn } from './conn.ts'
+import { renderScheduler } from './scheduler.ts'
 
-const claims: Claim[] = ['money', 'tiers'].map((by, i) => ({ id: `c${i}`, by, byKind: 'agent', path: 'a.ts', from: 2, to: 7, intent: `update ${by}`, at: 1 }))
-const conflict: Msg = { id: 'conflict', type: 'conflict', priority: 'interrupt', from: 'room', fromKind: 'bot', at: 10, claimId: 'c0', otherClaimId: 'c1', path: 'a.ts', text: 'overlap' }
-const note = (text: string, at = 20): Msg => ({ id: `note${at}`, type: 'note', priority: 'notify', from: 'room', fromKind: 'bot', to: 'money', at, text })
-const base: Msg = { id: 'base', type: 'base', priority: 'notify', from: 'tiers', fromKind: 'agent', at: 30, base: 'new', prev: 'old', commits: 1, paths: ['a.ts'], summary: 'landed' }
+let dom: JSDOM
+let room: RoomDoc
+const claims: Claim[] = ['money', 'tiers'].map((by, i) => ({ id: 'c' + i, by, byKind: 'agent', path: 'a.ts', from: 2, to: 7, intent: 'update ' + by, at: 1 }))
+const slot = (kind: ConflictKind, changes: Partial<ConflictSlot> = {}): ConflictSlot => ({
+  kind, owner: 'money', other: 'tiers', path: kind + '.ts', subject: kind === 'claims' ? 'c0\0c1' : kind === 'edit-in-claim' ? 'c1' : kind === 'contract' ? 'f' : undefined,
+  status: 'conflict', settled: 'conflict', inputs: 'inputs', factId: 'fact', fence: 'fence', checkedAt: 10, confirmedAt: 10, evaluatedRanges: [{ from: 2, to: 7 }], lines: [2, 7], ...changes,
+  openId: changes.openId ?? 'opening', endpoints: changes.endpoints ?? [{ name: changes.owner ?? 'money' }, { name: changes.other ?? 'tiers' }],
+})
+const map = () => room.doc.getMap<ConflictSlot>('conflicts')
+const conn = () => ({ room, provider: { awareness: { getStates: () => new Map(), on: vi.fn() } } }) as unknown as Conn
 
-it('keeps an overlapping pair open', () => {
-  expect(deriveConflictSpans([conflict], claims)[0]).toMatchObject({ from: 2, to: 7, hidden: false })
-  expect(deriveConflictSpans([conflict], claims)[0].resolvedBy).toBeUndefined()
+beforeEach(() => {
+  room = new RoomDoc()
+  dom = new JSDOM('<body></body>')
+  vi.stubGlobal('document', dom.window.document)
+  vi.stubGlobal('window', dom.window)
+  vi.stubGlobal('localStorage', { getItem: () => null, setItem() {} })
+  vi.stubGlobal('requestAnimationFrame', vi.fn(() => 1))
+  vi.stubGlobal('cancelAnimationFrame', vi.fn())
+  for (const claim of claims) room.claims.set(claim.id, claim)
 })
-it('detects release and retains the original range after the claim leaves the map', () => {
-  const announce: Msg = { id: 'claim', type: 'claim', priority: 'fyi', from: 'money', fromKind: 'agent', at: 1, claimId: 'c0', path: 'a.ts', from_line: 2, to_line: 7, intent: 'money' }
-  const release: Msg = { id: 'release', type: 'release', priority: 'fyi', from: 'money', fromKind: 'agent', at: 20, claimId: 'c0', path: 'a.ts' }
-  expect(deriveConflictSpans([announce, conflict, release], claims.slice(1))[0]).toMatchObject({ from: 2, to: 7, resolvedBy: { how: 'released', who: 'money', at: 20 }, hidden: false })
-})
-it('detects narrowing', () => {
-  expect(deriveConflictSpans([conflict], [claims[0], { ...claims[1], from: 8, to: 10, at: 20 }])[0].resolvedBy).toEqual({ how: 'narrowed', who: 'tiers', at: 20 })
-})
-it('only accepts later clean messages for the exact path and participants', () => {
-  expect(deriveConflictSpans([conflict, note("your a.ts and tiers's merge cleanly again")], claims)[0].resolvedBy).toBeUndefined()
-  for (const m of [note("your b.ts and tiers's merge cleanly again"), note("your a.ts and other's merge cleanly again"), note("your a.ts and tiers's merge cleanly again", 5)]) expect(deriveConflictSpans([conflict, m], claims)[0].resolvedBy).toBeUndefined()
-})
-it('a base event cannot hide a conflict between participants on separate branches', () => {
-  expect(deriveConflictSpans([conflict, base], claims)[0]).toMatchObject({ hidden: false })
-  expect(deriveConflictSpans([conflict, base], claims)[0].resolvedBy).toBeUndefined()
-})
-it('collapses matching conflicts but keeps pair-only resolution notes separate', () => {
-  const events: Msg[] = [conflict, { ...conflict, id: 'copy', priority: 'notify', at: 11, claimId: 'c1', otherClaimId: 'c0' }, note("your a.ts and tiers's merge cleanly again")]
-  const cards = collapseConflictTimeline(events, claims)
-  expect(cards).toHaveLength(2)
-  expect(cards.find(card => card.conflict)?.conflict?.events.map(m => m.id)).toEqual(['conflict', 'copy'])
-})
-it('folds pairwise merge notes and both addressed overlap notifications', () => {
-  const notices = [note("your a.ts and tiers's now conflict around lines 2, 7; room_preview_merge(tiers) for detail", 10), note("your a.ts and tiers's merge cleanly again")]
-  expect(collapseConflictTimeline(notices)).toHaveLength(1)
-  const copies: Msg[] = [{ ...conflict, otherClaimId: '', to: 'tiers', text: "you edited a.ts:2-7 inside money's claim c0" }, { ...conflict, id: 'other', otherClaimId: '', to: 'money', text: "tiers's agent edited a.ts:2-7 inside your claim c0" }]
-  expect(collapseConflictTimeline(copies, [claims[0]])).toHaveLength(1)
-})
+afterEach(() => { room.doc.destroy(); renderScheduler.flushNow(); dom.window.close(); vi.restoreAllMocks(); vi.unstubAllGlobals() })
 
-class Element {
-  attributes = new Map<string, string>()
-  events = new Map<string, unknown>()
-  setAttribute(name: string, value: string) { this.attributes.set(name, value) }
-  addEventListener(name: string, fn: unknown) { this.events.set(name, fn) }
-  className = ''; children: (Element | string)[] = []; properties = new Map<string, string>(); style = { top: '', right: '', minHeight: '', background: '', setProperty: (name: string, value: string) => this.properties.set(name, value), gridRow: '', gridColumn: '', gridTemplateColumns: '' }; dataset = {}
-  ariaLabel = ''; onfocus?: () => void; onmouseenter?: () => void
-  get textContent(): string { return this.children.map(c => typeof c === 'string' ? c : c.textContent).join('') }
-  classList = { add: (name: string) => { this.className += ` ${name}` } }
-  append(...children: (Element | string)[]) { this.children.push(...children) }
-  replaceChildren(...children: (Element | string)[]) { this.children = children }
-  find(cls: string): Element[] { return [...(this.className.split(' ').includes(cls) ? [this] : []), ...this.children.flatMap(c => typeof c === 'string' ? [] : c.find(cls))] }
-}
-afterEach(() => vi.unstubAllGlobals())
-it('renders one right-edge tag and tints each conflict line by its participant', () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 6 }, (_, i) => ({ text: 'changed', side: i < 3 ? 'a' : 'b', changedBy: null, conflict: true })), ['money', 'tiers'])
-  expect(host.find('conflict-tag').map(label => label.children[0])).toEqual(['conflict'])
-  expect(host.find('conflict-bracket')).toHaveLength(0)
-  expect(host.find('conflict-bar')).toHaveLength(1)
-  const bar = host.find('conflict-bar')[0]
-  expect(bar.style.gridRow).toBe('1 / 7')
-  expect(host.find('conflict-line').map(row => row.properties.get('--line-owner'))).toEqual([
-    ...Array(3).fill(colorFor('money')), ...Array(3).fill(colorFor('tiers')),
-  ])
-  expect(host.find('conflict-gutter')).toHaveLength(0)
-  expect(host.find('conflict-span-gutter')).toHaveLength(0)
-  expect(host.find('conflict-tag')[0].ariaLabel).toContain('money ↔ tiers')
-  expect(host.find('conflict-tag')[0].ariaLabel).toContain('Unresolved')
-  expect(host.find('conflict-tag')[0].onfocus).toBeUndefined()
-  expect(host.find('conflict-tag')[0].events.get('pointerenter')).toBeTypeOf('function')
-  expect(host.find('conflict-line')).toHaveLength(6)
+it.each(['merge', 'edit-in-claim', 'claims', 'contract'] as const)('shows and clears a %s conflict from state alone in file-level cards', kind => {
+  map().set('state', slot(kind))
+  expect(room.messages()).toEqual([])
+  const entries = currentConflicts(room)
+  expect(entries).toHaveLength(1)
+  const conflict = entries[0]
+  const text = formatConflictLine(conflict)
+  expect(conflictCard(conflict).textContent).toContain(text)
+  const timeline = timelinePanel(conn(), createFocusState())
+  const board = boardPanel(conn(), vi.fn())
+  expect(timeline.querySelector('.conflict-card')?.textContent).toContain(text)
+  expect(board.querySelector('.conflict-card')?.textContent).toContain(text)
+  map().set('state', slot(kind, { status: 'clean', settled: 'clean' }))
+  expect(timelineEntries(room)).toEqual([])
+  renderScheduler.flushNow()
+  expect(timeline.querySelector('.conflict-card')).toBeNull()
+  expect(board.querySelector('.conflict-card')).toBeNull()
 })
 
-it('packs overlapping spans into right-edge lanes, reuses lanes, and includes intent and resolution details', () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const span = deriveConflictSpans([conflict], claims)[0]
-  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 12 }, (_, i) => ({ text: 'code', side: 'common', changedBy: null, conflict: false, aLine: i + 1 })), ['money', 'tiers'], undefined, [
-    span,
-    { ...span, id: 'overlap', people: ['money', 'third'], from: 3, to: 6 },
-    { ...span, id: 'resolved', from: 9, to: 11, resolvedBy: { how: 'released', who: 'money', at: 20 } },
-  ])
-  expect(host.find('conflict-edge')).toHaveLength(1)
-  expect(host.find('conflict-code-grid')[0].style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
-  expect(host.find('code-line').every(row => row.style.gridColumn === '1')).toBe(true)
-  expect(host.find('conflict-edge')[0].style.gridTemplateColumns).toBe('repeat(2, 2px)')
-  const bars = host.find('conflict-bar')
-  expect(bars.map(bar => bar.style.gridColumn)).toEqual(['1', '2', '1'])
-  expect(bars.map(bar => bar.style.gridRow)).toEqual(['2 / 8', '3 / 7', '9 / 12'])
-  expect(host.find('conflict-tag')[1].ariaLabel).toContain('third')
-  expect(host.find('conflict-tag').map(label => label.children[0])).toEqual(['both claimed', 'both claimed', 'resolved'])
-  expect(host.find('conflict-tag')[0].ariaLabel).toContain('money: update money')
-  expect(host.find('conflict-tag')[0].ariaLabel).toContain('tiers: update tiers')
-  expect(bars[2].className).toContain('resolved')
-  expect(host.find('conflict-tag')[2].ariaLabel).toContain('resolved · money released')
-  expect(host.find('resolved-conflict-line')).toHaveLength(3)
-})
-it('uses theme-aware participant tints, slim separated edge lines, and accessible tooltips', () => {
-  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
-  expect(css).toContain('--conflict-tint: 22%')
-  expect(css).toContain('--conflict-tint: 28%')
-  expect(css).toContain('--conflict-red: #B42318')
-  expect(css).toContain('--conflict-red: #F97066')
-  expect(css).toContain('--claim-amber: #B54708')
-  expect(css).toContain('--claim-amber: #F79009')
-  expect(css).toContain('.conflict-bar.claim-overlap { background: var(--claim-amber); color: var(--claim-amber); }')
-  expect(css).toContain('var(--line-owner) var(--conflict-tint)')
-  expect(css).toContain('column-gap: 2px')
-  expect(css).toContain('width: 2px')
-  expect(css).toContain('font: 11px/17px')
-  expect(css).not.toContain('.conflict-gutter')
-  expect(css).toContain('#overlay-root { position: fixed;')
-  expect(css).not.toContain('.conflict-tooltip')
+it('ignores old conflict messages even when they are malformed or their old claims still overlap', () => {
+  const old = ['merge-conflict', 'conflict', 'contract'].map((type, i) => ({ type, id: 'old' + i, from: 'room', priority: 'notify', at: i, text: 'old conflict' }))
+  room.bus.push(old as unknown as Msg[])
+  expect(currentConflicts(room)).toEqual([])
+  expect(timelineEntries(room)).toEqual([])
+  expect(groupEpisodes(old as unknown as Msg[])).toEqual([])
+  expect(boardPanel(conn(), vi.fn()).textContent).not.toContain('old conflict')
+  expect(timelinePanel(conn(), createFocusState()).textContent).not.toContain('old conflict')
 })
 
-it('does not duplicate a text region with a recorded conflict and preserves outside ownership', () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const span = deriveConflictSpans([conflict], claims)[0]
-  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 8 }, (_, i) => ({
-    text: 'code', side: i < 4 ? 'a' : 'b', changedBy: null, conflict: i >= 1 && i <= 6, aLine: i + 1,
-  })), ['money', 'tiers'], undefined, [span])
-  expect(host.find('conflict-tag')).toHaveLength(1)
-  expect(host.find('conflict-tag')[0].children[0]).toBe('conflict')
-  expect(host.find('conflict-bar')[0].className).not.toContain('claim-overlap')
-  expect(host.find('conflict-tag')[0].ariaLabel).toContain('both claimed')
-  expect(host.find('conflict-tag')[0].ariaLabel).toContain('update tiers')
-  expect(host.find('conflict-tag')[0].ariaLabel).toContain('update money')
-  const rows = host.find('code-line')
-  expect(rows[0].className).not.toContain('conflict-line')
-  expect(rows[7].className).not.toContain('conflict-line')
-  expect(rows[0].properties.get('--line-owner')).toBe(colorFor('money'))
-  expect(rows[7].properties.get('--line-owner')).toBe(colorFor('tiers'))
+it('does not infer an open conflict from overlapping claims alone', () => {
+  expect(currentConflicts(room)).toEqual([])
+  expect(timelineEntries(room)).toEqual([])
 })
 
-it('ignores releases from earlier sessions and requires exact claim ids at or after opening', () => {
-  const oldRelease: Msg = { id: 'old-release', type: 'release', priority: 'fyi', from: 'money', fromKind: 'agent', at: 5, claimId: 'c0', path: 'a.ts' }
-  const unrelated = { ...oldRelease, id: 'unrelated', at: 11, claimId: 'previous-session' }
-  expect(deriveConflictSpans([oldRelease, conflict, unrelated], claims)[0].resolvedBy).toBeUndefined()
-  const exact = { ...oldRelease, id: 'exact', at: 10 }
-  expect(deriveConflictSpans([conflict, exact], claims)[0].resolvedBy).toMatchObject({ how: 'released', at: 10 })
-})
-
-it('keeps earlier and current claim sessions separate even for one-claim edit conflicts', () => {
-  const oldClaim = { ...claims[0], id: 'old-c0' }
-  const oldConflict = { ...conflict, id: 'old-conflict', claimId: oldClaim.id, otherClaimId: '', to: 'tiers', text: "you edited a.ts:2-7 inside money's claim", at: 2 }
-  const release: Msg = { id: 'release-old', type: 'release', priority: 'fyi', from: 'money', fromKind: 'agent', at: 5, claimId: oldClaim.id, path: 'a.ts' }
-  const current = { ...oldConflict, id: 'new-conflict', claimId: 'c0', at: 10 }
-  const spans = deriveConflictSpans([oldConflict, release, current], [oldClaim, claims[0]])
-  expect(spans.find(s => s.claimIds.includes('old-c0'))?.resolvedBy?.how).toBe('released')
-  expect(spans.find(s => s.claimIds.includes('c0'))?.resolvedBy).toBeUndefined()
-})
-
-it('numbers merged rows once and uses participant-colored dots only on divergent rows', () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const lines = classifyNWay('same\nold\nend\n', [{ name: 'money', text: 'same\nA\nend\n' }, { name: 'tiers', text: 'same\nB\nend\n' }])
-  renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'])
-  expect(host.find('line-number').map(n => n.textContent)).toEqual(['1', '2', '3', '4'])
-  const rows = host.find('code-line')
-  expect(rows.map(r => r.find('line-number').length)).toEqual([1, 1, 1, 1])
-  expect(rows.map(r => r.find('dot').length)).toEqual([0, 1, 1, 0])
-  expect(rows[1].find('dot')[0].style.background).toBe(colorFor('money'))
-  expect(rows[2].find('dot')[0].style.background).toBe(colorFor('tiers'))
-  renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'], undefined, [], false)
-  expect(host.find('line-number')).toHaveLength(8)
-  expect(host.find('side-marker')).toHaveLength(0)
-})
-
-it.each(['identical', 'clean', 'conflicting'])('classifies %s text with overlapping claims and includes both intents and plans', kind => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const base = 'one\ntwo\nthree\nfour\nfive\nsix\nseven\neight\n'
-  const a = kind === 'identical' ? base : base.replace('two', 'A')
-  const b = kind === 'conflicting' ? base.replace('two', 'B') : kind === 'clean' ? base.replace('seven', 'B') : base
-  const cs = claims.map(c => ({ ...c, plans: [{ kind: 'add' as const, symbol: c.by + 'Helper' }] }))
-  const spans = deriveConflictSpans([], cs)
-  renderCodeLines(host as unknown as HTMLElement, classifyNWay(base, [{ name: 'money', text: a }, { name: 'tiers', text: b }]), ['money', 'tiers'],
-    (person, line) => cs.filter(c => c.by === person && c.from <= line && c.to >= line), spans)
-  const tags = host.find('conflict-tag')
-  const red = host.find('conflict-bar').filter(b => !b.className.includes('claim-overlap'))
-  expect(red).toHaveLength(kind === 'conflicting' ? 1 : 0)
-  expect(tags[0].children[0]).toBe(kind === 'conflicting' ? 'conflict' : 'both claimed')
-  for (const tag of tags) {
-    expect(tag.ariaLabel).toContain('money: update money (plans: add moneyHelper)')
-    expect(tag.ariaLabel).toContain('tiers: update tiers (plans: add tiersHelper)')
-    expect(tag.ariaLabel).toContain('a.ts:2-7')
-    expect(tag.ariaLabel).toContain('Unresolved: both claimed')
-  }
-  if (kind !== 'conflicting') expect(host.find('conflict-line')).toHaveLength(0)
-  else expect(red[0].style.gridRow).toBe('2 / 4')
-})
-
-it('tints all base-relative edits and keeps stronger conflict annotations', () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const base = Array.from({ length: 12 }, (_, i) => `line ${i + 1}\n`).join('')
-  const a = base.replace('line 2\n', 'A only\n').replace('line 8\n', 'joint\n').replace('line 10\nline 11\n', 'A ten\nA eleven\n')
-  const b = base.replace('line 5\n', 'B only\n').replace('line 8\n', 'joint\n').replace('line 10\nline 11\n', 'B ten\nB eleven\n')
-  const lines = classifyNWay(base, [{ name: 'rohanz+a', text: a }, { name: 'rohanz+tiers', text: b }])
-  renderCodeLines(host as unknown as HTMLElement, lines, ['rohanz+a', 'rohanz+tiers'])
-  const rows = host.find('code-line')
-  for (const [index, author, color] of [[1, 'rohanz+a', colorFor('rohanz+a')], [4, 'rohanz+tiers', colorFor('rohanz+tiers')], [7, 'rohanz+a and rohanz+tiers', colorFor('rohanz+a')]] as const) {
-    expect(rows[index].className).toContain('changed-line')
-    expect(rows[index].className).not.toContain('conflict-line')
-    expect(rows[index].properties.get('--line-change-owner')).toBe(color)
-    expect(rows[index].attributes.get('aria-label')).toContain('Show details')
-    expect(rows[index].find('dot')[0].style.background).toBe(color)
-  }
-  lines.forEach((line, i) => {
-    if (line.changedBy.length) return
-    expect(rows[i].className).not.toContain('changed-line')
-    expect(rows[i].properties.has('--line-change-owner')).toBe(false)
-    expect(rows[i].find('dot')).toHaveLength(0)
+it('observes a completed pair publication without showing its intermediate empty or mixed state', () => {
+  map().set('a', slot('merge', { path: 'a.ts' }))
+  const openPaths = () => currentConflicts(room).flatMap(c => c.slots.map(s => s.path))
+  expect(openPaths()).toEqual(['a.ts'])
+  const snapshots: string[][] = []
+  map().observe(() => snapshots.push(openPaths()))
+  room.doc.transact(() => {
+    map().delete('a')
+    map().set('b', slot('merge', { path: 'b.ts' }))
+    map().set('c', slot('merge', { path: 'c.ts' }))
   })
-  expect(host.find('conflict-line')).toHaveLength(4)
-  expect(host.find('conflict-tag').map(t => t.textContent)).toEqual(['conflict'])
-  expect(host.find('conflict-bar')[0].style.gridRow).toBe('10 / 14')
-  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
-  expect(css).toContain('--change-tint: 14%')
-  expect(css).toContain('--change-tint: 20%')
-  expect(css).toContain('var(--line-change-owner) var(--change-tint)')
-  expect(css.indexOf('.conflict-code-grid :is(.conflict-line')).toBeGreaterThan(css.indexOf('.conflict-code-grid .changed-line'))
-  expect(css).toContain('.claim-overlap-line:not(.conflict-line):not(.changed-line)')
+  expect(snapshots).toEqual([['b.ts', 'c.ts']])
 })
 
+it('keeps merge-preview text annotations independent of recorded state', () => {
+  const host = document.createElement('div')
+  renderCodeLines(host, [{ text: 'competing change', side: 'a', changedBy: 'a', conflict: true, aLine: 2 }], ['money', 'tiers'])
+  expect(host.querySelector('.conflict-tag')?.textContent).toBe('conflict')
+  expect(host.querySelector('.resolved')).toBeNull()
+})
 
-it.each([false, true])('stacks open tags above resolved tags in row flow (text conflict: %s)', textConflict => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const span = deriveConflictSpans([conflict], claims)[0]
-  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 8 }, (_, i) => ({
-    text: 'code', side: 'a', changedBy: 'a', conflict: textConflict && i >= 1 && i <= 6, aLine: i + 1,
-  })), ['money', 'tiers'], undefined, [
-    { ...span, resolvedBy: { how: 'released', who: 'money', at: 20 } }, span,
+it('uses the original owner perspective in file-level cards regardless of recipient sort order', () => {
+  map().set('edit', slot('edit-in-claim', { owner: 'z-editor', other: 'a-holder' }))
+  const expected = formatConflictLine(openConflicts(room, 'z-editor')[0])
+  expect(conflictCard(currentConflicts(room)[0]).textContent).toContain(expected)
+})
+
+it('shows last confirmed evidence without treating an unavailable diagnostic recheck as fresh confirmation', () => {
+  const confirmedAt = Date.UTC(2026, 10, 25, 1, 2, 3)
+  const checkedAt = Date.UTC(2026, 10, 25, 4, 5, 6)
+  map().set('state', slot('claims', { confirmedAt, checkedAt, status: 'unknown' }))
+  const card = conflictCard(currentConflicts(room)[0])
+  expect(card.textContent).toContain('Last confirmed 2026-11-25 01:02:03 UTC')
+  expect(card.textContent).toContain('recheck unavailable')
+  expect(card.textContent).not.toContain('04:05:06')
+  map().set('state', slot('claims', { confirmedAt: undefined, checkedAt, status: 'unknown' }))
+  const legacy = conflictCard(currentConflicts(room)[0])
+  expect(legacy.textContent).toContain('Confirmation time unavailable')
+  expect(legacy.textContent).not.toContain('Last confirmed')
+})
+
+it('keeps current conflicts outside chronological speech, stable across rechecks, priority filters and message windows', () => {
+  room.bus.push([{ id: 'scope', type: 'scope', priority: 'notify', from: 'money', fromKind: 'agent', at: 1, area: 'api', summary: 'ordinary work', paths: ['a.ts'] }])
+  for (let i = 0; i < 40; i++) room.bus.push([{ id: 'n' + i, type: 'note', priority: 'notify', from: 'money', fromKind: 'agent', at: 2 + i, text: 'speech ' + i }])
+  map().set('first', slot('merge', { other: 'a-peer', confirmedAt: 2, checkedAt: 2 }))
+  map().set('second', slot('merge', { other: 'z-peer', confirmedAt: 1, checkedAt: 1 }))
+  const timeline = timelinePanel(conn(), createFocusState())
+  const board = boardPanel(conn(), vi.fn())
+  const order = (panel: HTMLElement) => [...panel.querySelectorAll('.open-conflicts .conflict-card strong')].map(node => node.textContent)
+  const speech = timeline.querySelector('.timeline-list')!.textContent
+  const feed = board.querySelector('.board-feed')!.textContent
+  expect(order(timeline)).toEqual(['money ↔ a-peer', 'money ↔ z-peer'])
+  expect(order(board)).toEqual(order(timeline))
+  expect(timeline.querySelector('.timeline-list .conflict-card')).toBeNull()
+  expect(board.querySelector('.board-feed .conflict-card')).toBeNull()
+  expect(timelineEntries(room)).toHaveLength(41)
+  map().set('first', slot('merge', { other: 'a-peer', confirmedAt: 2, checkedAt: 999999, status: 'unknown' }))
+  renderScheduler.flushNow()
+  expect(order(timeline)).toEqual(['money ↔ a-peer', 'money ↔ z-peer'])
+  expect(order(board)).toEqual(order(timeline))
+  expect(timeline.querySelector('.timeline-list')!.textContent).toBe(speech)
+  expect(board.querySelector('.board-feed')!.textContent).toBe(feed)
+  timeline.querySelector<HTMLButtonElement>('.priority-filter-chip.priority-notify')!.click()
+  expect(order(timeline)).toEqual(['money ↔ a-peer', 'money ↔ z-peer'])
+})
+
+it('does not mark unrelated source lines using merge-result conflict positions after an insertion', async () => {
+  const base = Array.from({ length: 20 }, (_, i) => 'base ' + (i + 1) + '\n').join('')
+  const ours = 'inserted\n' + base.replace('base 15\n', 'A15\n')
+  const theirs = base.replace('base 15\n', 'B15\n')
+  const result = await gitMergeFile(base, ours, theirs, { ours: 'money', base: 'base', theirs: 'tiers' })
+  expect(result.conflicts.length).toBeGreaterThan(0)
+  map().set('merge', slot('merge', { path: 'x', lines: result.conflicts.map(c => c.from), evaluatedRanges: undefined }))
+  const mergedLines = classifyNWay(base, [{ name: 'money', text: ours }, { name: 'tiers', text: theirs }])
+  const host = document.createElement('div')
+  renderCodeLines(host, mergedLines, ['money', 'tiers'])
+  const marked = [...host.querySelectorAll('.code-line')].flatMap((node, i) => node.classList.contains('conflict-line') ? [mergedLines[i].text] : [])
+  expect(marked).toEqual(['A15', 'B15'])
+  expect(marked).not.toContain('base 16')
+  expect(currentConflicts(room)).toHaveLength(1)
+  expect(conflictCard(currentConflicts(room)[0]).textContent).toContain('x conflicts with')
+})
+
+it('never maps A100 conflict state onto unrelated A190/B100 source rows', async () => {
+  publish(room, 'A', 'x.ts', 'owner version\n', 'base\n')
+  publish(room, 'B', 'x.ts', 'holder version\n', 'base\n')
+  room.claims.set('b-claim', { id: 'b-claim', by: 'B', byKind: 'agent', path: 'x.ts', from: 10, to: 10, intent: 'edit', at: 1 })
+  map().set('claim-coordinate', slot('edit-in-claim', {
+    owner: 'A', other: 'B', path: 'x.ts', subject: 'b-claim',
+    lines: [100], evaluatedRanges: undefined, claimRanges: [{ from: 10, to: 10 }], merges: 'clean',
+  }))
+  // A inserted ninety lines above B:10. B:100 belongs to an unrelated later row.
+  vi.spyOn(merged, 'classifyNWay').mockReturnValue([
+    { text: 'evaluated overlap', side: 'common', changedBy: [], conflict: false, lineNumbers: { A: 100, B: 10 } },
+    { text: 'unrelated later line', side: 'common', changedBy: [], conflict: false, lineNumbers: { A: 190, B: 100 } },
   ])
-  const tags = host.find('conflict-tag')
-  expect(tags.map(t => t.textContent)).toEqual([textConflict ? 'conflict' : 'both claimed', 'resolved'])
-  expect(host.find('code-line')[1].find('line-tags')[0].children).toEqual(tags)
-  expect(tags.map(t => t.style.top)).toEqual(['', ''])
-  expect(host.find('conflict-bar').map(b => b.style.gridColumn)).toEqual(['1', '2'])
-})
-
-it('collapses multiple resolved same-line regions into one text tag while retaining edge bars', () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const span = deriveConflictSpans([conflict], claims)[0]
-  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 10 }, (_, i) => ({
-    text: 'code', side: 'common', changedBy: null, conflict: false, aLine: i + 1,
-  })), ['money', 'tiers'], undefined, [
-    ...[3, 4, 5].map(to => ({ ...span, to, resolvedBy: { how: 'released' as const, who: 'money', at: to } })),
-    span, { ...span, to: 8 },
-    { ...span, from: 3, to: 9 },
-  ])
-  const tags = host.find('conflict-tag')
-  expect(tags.map(t => t.textContent)).toEqual(['both claimed', 'both claimed', '3 resolved', 'both claimed'])
-  expect(host.find('code-line')[1].find('line-tags')[0].children).toEqual(tags.slice(0, 3))
-  expect(tags[2].className).toContain('resolved')
-  expect(tags[2].ariaLabel.match(/money released/g)).toHaveLength(3)
-  expect(host.find('conflict-bar')).toHaveLength(6)
-  expect(host.find('conflict-bar').flatMap(bar => bar.find('conflict-tag'))).toHaveLength(0)
-  expect(host.find('code-line')[2].find('line-tags')[0].children).toEqual([tags[3]])
-})
-
-it.each([
-  { open: 1, resolved: 3, labels: ['conflict', '3 resolved'] },
-  { open: 2, resolved: 1, labels: ['conflict', 'both claimed', 'resolved'] },
-  { open: 0, resolved: 2, labels: ['2 resolved'] },
-])('renders the exact same-line stack for $open open and $resolved resolved regions', ({ open, resolved, labels }) => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const span = deriveConflictSpans([conflict], claims)[0]
-  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 8 }, (_, i) => ({
-    text: 'code', side: 'a', changedBy: null, conflict: open > 0 && i === 1, aLine: i + 1,
-  })), ['money', 'tiers'], undefined, [
-    ...(open === 2 ? [{ ...span, people: ['money', 'third'], claims: claims.map(c => c.by === 'tiers' ? { ...c, by: 'third' } : c) }] : []),
-    ...Array.from({ length: resolved }, (_, i) => ({
-      ...span, to: i + 3, resolvedBy: { how: 'released' as const, who: 'money', at: i + 20 },
-    })),
-  ])
-  const tags = host.find('conflict-tag')
-  expect(tags.map(t => t.textContent)).toEqual(labels)
-  expect(tags).toHaveLength(labels.length)
-  const pill = tags.at(-1)!
-  expect(pill.className).toContain('resolved')
-  for (let i = 0; i < resolved; i++) {
-    expect(pill.ariaLabel).toContain(`a.ts:2-${i + 3}`)
-  }
-  expect(pill.ariaLabel).toContain('money ↔ tiers')
-  expect(pill.ariaLabel.match(/money released/g)).toHaveLength(resolved)
-})
-
-it('reserves a sticky tag column while full-width rows share the pane scroller', () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  renderCodeLines(host as unknown as HTMLElement, [{
-    text: 'long line '.repeat(200), side: 'a', changedBy: null, conflict: true, aLine: 1,
-  }], ['money', 'tiers'])
-  const grid = host.find('conflict-code-grid')[0]
-  const text = host.find('line-text')[0]
-  const gutter = host.find('conflict-edge')[0]
-  expect(grid.children).toEqual([text, gutter, ...host.find('line-annotation')])
-  expect(text.find('code-line')).toHaveLength(1)
-  expect(text.find('conflict-tag')).toHaveLength(1)
-  expect(grid.style.gridTemplateColumns).toBe('minmax(0, 1fr) 96px')
-  expect(text.style.gridRow).toBe(gutter.style.gridRow)
-  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
-  expect(css).toContain('.conflict-code-grid > .line-text { grid-column: 1 / -1; display: grid; grid-template-rows: subgrid; grid-template-columns: minmax(0, 1fr); min-width: 0; overflow: visible; }')
-  expect(css).toContain('.conflict-edge { position: sticky; right: 0; z-index: 3; grid-column: 2; display: grid; grid-template-rows: subgrid; column-gap: 2px; justify-content: end; overflow: hidden; }')
-  // Model the grid's rects at narrow and wide viewport sizes. The scrollable
-  // content can be wider, but its visible box ends before every tag's box.
-  for (const width of [240, 800]) {
-    const textRect = { left: 0, right: width - 96 }
-    for (const bar of gutter.find('conflict-bar')) for (const tag of bar.find('conflict-tag')) {
-      const lane = Number(bar.style.gridColumn) - 1
-      const barRight = width - (gutter.find('conflict-bar').length - 1 - lane) * 4
-      const tagRight = barRight - parseFloat(tag.style.right)
-      const tagRect = { left: tagRight - 80, right: tagRight }
-      expect(tagRect.left).toBeGreaterThanOrEqual(textRect.right)
-      expect(tagRect.right).toBeLessThanOrEqual(width)
-    }
-  }
-})
-
-it('uses the specified theme tints and 60% owner borders with at least 4.5:1 code contrast', () => {
-  const css = readFileSync(new URL('./style.css', import.meta.url), 'utf8')
-  expect(css).toContain('--change-tint: 14%; --conflict-tint: 22%')
-  expect(css.match(/--change-tint: 20%; --conflict-tint: 28%/g)).toHaveLength(2)
-  expect(css).toContain('border-left: 2px solid transparent; box-shadow: none; color: var(--code-ink)')
-  expect(css).toContain('border-left-color: color-mix(in srgb, var(--line-change-owner) 60%, transparent)')
-  const rgb = (hex: string) => hex.match(/[a-f0-9]{2}/gi)!.map(c => parseInt(c, 16) / 255)
-  const luminance = (rgb: number[]) => rgb.map(c => c <= .04045 ? c / 12.92 : ((c + .055) / 1.055) ** 2.4)
-    .reduce((sum, c, i) => sum + c * [.2126, .7152, .0722][i], 0)
-  const identity = readFileSync(new URL('../../shared/src/identity.ts', import.meta.url), 'utf8')
-  const palette = identity.match(/#[a-f0-9]{6}/gi)!.map(rgb).sort((a, b) => luminance(a) - luminance(b))
-  expect(palette.length).toBeGreaterThan(0)
-  // Check every owner, beginning with the darkest; dark mode's worst case may be brighter.
-  const themes = [...css.matchAll(/--code-bg: (#[a-f0-9]{6}); --code-gutter: #[a-f0-9]{6}; --code-ink: (#[a-f0-9]{6})/gi)]
-  expect(themes).toHaveLength(3)
-  for (const [index, theme] of themes.entries()) {
-    const bg = rgb(theme[1]), ink = luminance(rgb(theme[2]))
-    for (const tint of index === 0 ? [.14, .22] : [.20, .28]) for (const owner of palette) {
-      const background = luminance(bg.map((c, i) => c * (1 - tint) + owner[i] * tint))
-      expect((Math.max(ink, background) + .05) / (Math.min(ink, background) + .05)).toBeGreaterThanOrEqual(4.5)
-    }
-  }
-})
-
-// Shaped as ConflictSlots posts them: the editor's notice and the holder's copy. They name no `path:from-to`
-// range, so the code view draws them only from a span that has one (`ranged`).
-const editNotice = (editor: string, at: number, merges?: 'clean'): Msg[] => [
-  { ...conflict, id: `${editor}${at}`, at, claimId: 'c1', otherClaimId: '', to: editor, text: `you edited a.ts inside tiers's claim at lines 2-7 (update tiers)${merges ? '; merges cleanly' : ''}`, ...merges ? { merges } : {} },
-  { ...conflict, id: `${editor}${at}:holder`, at, priority: 'notify', claimId: 'c1', otherClaimId: '', to: 'tiers', text: `${editor} edited a.ts inside your claim (update tiers)${merges ? '; merges cleanly' : ''}`, ...merges ? { merges } : {} },
-]
-const ranged = (span: ConflictSpan): ConflictSpan => ({ ...span, from: 2, to: 7 })
-
-it('draws an overlap that merges cleanly as an overlap, and a later non-merging notice as a conflict', () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const lines = Array.from({ length: 8 }, (_, i) => ({ text: 'code', side: 'common' as const, changedBy: null, conflict: false, aLine: i + 1, bLine: i + 1 }))
-  const render = (messages: Msg[]) => {
-    const spans = deriveConflictSpans(messages, [claims[1]])
-    const host = new Element()
-    renderCodeLines(host as unknown as HTMLElement, lines, ['money', 'tiers'], undefined, spans.map(ranged))
-    return { spans, span: spans[0], tags: host.find('conflict-tag'), host, card: conflictCard(spans[0]) as unknown as Element }
-  }
-  const clean = render(editNotice('money', 10, 'clean'))
-  expect(clean.spans).toHaveLength(1)
-  expect(clean.span).toMatchObject({ merges: 'clean' })
-  expect(clean.tags.map(tag => tag.children[0])).toEqual(['overlap'])
-  expect(clean.tags[0].ariaLabel).toContain('Overlap: merges cleanly')
-  expect(clean.tags[0].ariaLabel).not.toContain('conflict')
-  expect(clean.host.find('conflict-line')).toHaveLength(0)
-  expect(clean.host.find('claim-overlap-line').length).toBeGreaterThan(0)
-  expect(clean.card.textContent).toContain('overlap · money ↔ tiers')
-  expect(clean.card.textContent).not.toContain('conflict ·')
-  expect(clean.card.textContent).toContain("overlap a.ts · you edited a.ts inside tiers's claim at lines 2-7 (update tiers); merges cleanly")
-  expect(clean.card.textContent).not.toContain('conflict a.ts')
-  const stopped = render([...editNotice('money', 10, 'clean'), ...editNotice('money', 12)])
-  expect(stopped.span.merges).toBeUndefined()
-  expect(stopped.tags.map(tag => tag.children[0])).toEqual(['conflict'])
-  expect(stopped.tags[0].ariaLabel).toContain('Unresolved conflict')
-  expect(stopped.card.textContent).toContain('conflict · money ↔ tiers')
-})
-
-it("one editor's clean overlap does not hide another editor's conflict in the same claim", () => {
-  expect(deriveConflictSpans([...editNotice('money', 10), ...editNotice('third', 12, 'clean')], [claims[1]])[0].merges).toBeUndefined()
-  expect(deriveConflictSpans([...editNotice('money', 10, 'clean'), ...editNotice('third', 12, 'clean')], [claims[1]])[0].merges).toBe('clean')
-})
-
-it('the line annotation names a clean overlap an overlap', () => {
-  expect(lineAnnotation({ conflicts: [{ people: ['money', 'tiers'], resolved: false, overlap: true }] })).toBe('money ↔ tiers · overlap')
-  expect(lineAnnotation({ conflicts: [{ people: ['money', 'tiers'], resolved: false }] })).toBe('money ↔ tiers · conflict')
-})
-
-it('the parts of a clean overlap outside a text conflict stay an overlap', () => {
-  vi.stubGlobal('document', { createElement: () => new Element() })
-  const host = new Element()
-  const span = ranged(deriveConflictSpans(editNotice('money', 10, 'clean'), [claims[1]])[0])
-  renderCodeLines(host as unknown as HTMLElement, Array.from({ length: 8 }, (_, i) => ({
-    text: 'code', side: 'common' as const, changedBy: null, conflict: i === 3, aLine: i + 1, bLine: i + 1,
-  })), ['money', 'tiers'], undefined, [span])
-  expect(host.find('conflict-tag').map(tag => tag.children[0])).toEqual(['overlap', 'conflict', 'overlap'])
-  const rows = host.find('code-line')
-  expect(rows.filter(row => row.className.includes('claim-overlap-line'))).toHaveLength(5)
-  expect(rows[3].className).toContain('conflict-line')
-})
-
-it('a line in a clean overlap and a separate conflict is annotated as the conflict', () => {
-  expect(lineAnnotation({ conflicts: [{ people: ['money', 'tiers'], resolved: false, overlap: true }, { people: ['money', 'third'], resolved: false }] })).toBe('money ↔ third · conflict')
-})
-
-it("a cleared editor's conflict no longer counts against another editor's clean overlap", () => {
-  const cleared = (editor: string, at: number, merges?: 'clean'): Msg => ({ ...conflict, id: `${editor}${at}:clean`, at, priority: 'fyi', claimId: 'c1', otherClaimId: '', to: editor, text: `the ${merges ? 'overlap' : 'conflict'} with tiers cleared`, clearedFrom: 'conflict', ...merges ? { merges } : {} })
-  expect(deriveConflictSpans([...editNotice('money', 10), cleared('money', 11), ...editNotice('third', 12, 'clean')], [claims[1]])[0].merges).toBe('clean')
-  expect(deriveConflictSpans([...editNotice('money', 10, 'clean'), cleared('money', 11, 'clean')], [claims[1]])[0].merges).toBe('clean')
-  expect(deriveConflictSpans([...editNotice('money', 10), cleared('money', 11)], [claims[1]])[0].merges).toBeUndefined()
+  const pane = centrePanel(conn(), createFocusState())
+  await vi.waitFor(() => expect(pane.querySelectorAll('.code-line')).toHaveLength(2))
+  const unrelated = [...pane.querySelectorAll('.code-line')].find(row => row.querySelector('code')?.textContent === 'unrelated later line')!
+  expect(unrelated).toBeDefined()
+  expect(unrelated.classList.contains('claim-overlap-line')).toBe(false)
+  expect(pane.querySelector('.conflict-bar')).toBeNull()
+  expect(currentConflicts(room)).toHaveLength(1)
+  const card = conflictCard(currentConflicts(room)[0])
+  expect(card.textContent).toContain("Evaluated lines in A's x.ts: 100")
+  expect(card.textContent).toContain("Evaluated claim lines in B's x.ts: 10")
 })

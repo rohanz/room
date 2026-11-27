@@ -6,14 +6,14 @@
  * All wakeable messages go out as one content-free pointer over the host's path; successful sends and
  * explicitly uncertain submissions are recorded separately in `wakes.json`. A wake is never a receipt:
  * the message stays owed until a reply, a wait or
- * the edit hook hands it off. A mid-turn wake still permits one idle queue wake while the message is owed.
+ * the edit hook hands it off. Ordinary messages and uncertain conflict submissions still permit one idle fallback.
  */
 import fs from 'node:fs'
 import path from 'node:path'
 import { git } from '@room/roomd/git'
 import { answerMatchesQuestion, isAgentic, manifestPaths, defaultPriority, parseClaimRelease, shouldWakeOnMsg, type Msg } from '@room/shared'
 import type { Session } from './session.js'
-import type { Ledger } from './ledger.js'
+import { isConflictItem, type DeliveryItem, type Ledger } from './ledger.js'
 import { writeAtomic } from './leases.js'
 import { wakeUnavailable } from './hosts/prompt.js'
 import { waitConsumesMessage } from './tools/messaging.js'
@@ -34,7 +34,7 @@ const RELEASE_GIT_TIMEOUT_MS = 2_000
 const MAX_NAMED = 5
 
 type WakesFile = Record<string, Record<string, { via: WakeVia; at: number; uncertain?: boolean }>>
-const deliveryKey = ({ s, m }: { s: Session; m: Msg }) => `${s.roomName}\0${m.id}`
+const deliveryKey = ({ s, m }: { s: Session; m: DeliveryItem }) => `${s.roomName}\0${m.id}`
 const MAX_ATTEMPTS = 3
 const RETRY_COOLDOWN_MS = 60_000
 const UNKNOWN_BACKOFF_MS = [2_000, 5_000, 30_000]
@@ -69,7 +69,7 @@ export interface WakeReconcilerOptions {
   /** A lead's own workers: their routine progress notes do not wake it. */
   ownWorkers?: (s: Session) => ReadonlySet<string>
   /** Whether company makes `m` wakeable now (solo.ts); a room is silent while alone. Default: always. */
-  audible?: (s: Session) => (m: Msg) => boolean
+  audible?: (s: Session) => (m: DeliveryItem) => boolean
   log?: (line: string) => void
   now?: () => number
   backoffMs?: readonly number[]
@@ -146,9 +146,14 @@ export class WakeReconciler {
         }
       }
       for (const m of this.o.ledger.candidates(s)) if (m.to === s.me.name) {
+        if (isConflictItem(m)) {
+          health.retainedAddressed++
+          if (this.o.ledger.conflictWakeRecorded(s, m.id)) health.wakeRecorded++
+          else if (wakes[m.id]?.uncertain) health.uncertainWakeRecorded++
+        }
         health.pendingAddressed++
-        const age = Math.max(0, this.now() - m.at)
-        health.oldestPendingMs = Math.max(health.oldestPendingMs ?? 0, age)
+        const age = m.at === undefined ? undefined : Math.max(0, this.now() - m.at)
+        if (age !== undefined) health.oldestPendingMs = Math.max(health.oldestPendingMs ?? 0, age)
       }
     }
     return health
@@ -205,8 +210,8 @@ export class WakeReconciler {
   }
 
   /** What would be woken now, in delivery order. */
-  private wakeable(busy = false): { s: Session; m: Msg }[] {
-    const out: { s: Session; m: Msg }[] = []
+  private wakeable(busy = false): { s: Session; m: DeliveryItem }[] {
+    const out: { s: Session; m: DeliveryItem }[] = []
     const woken = this.wakes()
     for (const s of this.sessions.keys()) {
       const { ledger } = this.o
@@ -220,9 +225,14 @@ export class WakeReconciler {
       for (const m of ledger.candidates(s)) {
         // Messages owed before this session existed are left for its first reply or hook.
         const prior = done[m.id]
-        if ((m.seq ?? 0) <= frontier || (prior && (busy || prior.via !== 'turn')) || ledger.reserved(s, m.id) || waitConsumesMessage(s, m) || this.ownCommitRelease(s, m)) continue
-        if (!shouldWakeOnMsg(s.me, m, claims, uncommitted, workers).wake) continue
-        if (audible && !audible(m)) {
+        // Confirmed conflict delivery has exactly one authority: the ledger's conflicts.json record.
+        // wakes.json only preserves an uncertain turn attempt until its idle fallback succeeds.
+        const delivered = isConflictItem(m)
+          ? !ledger.conflictWakeable(s, m) || busy && prior?.uncertain
+          : (m.seq ?? 0) <= frontier || prior && (busy || prior.via !== 'turn')
+        if (delivered || ledger.reserved(s, m.id) || waitConsumesMessage(s, m) || (!isConflictItem(m) && this.ownCommitRelease(s, m))) continue
+        if (!isConflictItem(m) && !shouldWakeOnMsg(s.me, m, claims, uncommitted, workers).wake) continue
+        if (!isConflictItem(m) && audible && !audible(m)) {
           const key = `${s.roomName}\0${m.id}`
           if (!this.held.has(key)) { if (this.held.size >= 1000) this.held.clear(); this.held.add(key); this.o.log?.(`wake: not waking for ${m.type} ${m.id} in ${s.roomName}: alone here; it stays in room_state`) }
           continue
@@ -241,6 +251,11 @@ export class WakeReconciler {
   }
 
   private async pass(): Promise<void> {
+    try { await this.observedPass() }
+    finally { this.o.ledger.flushConflicts() }
+  }
+
+  private async observedPass(): Promise<void> {
     this.clearTimer()
     await this.refreshOwnCommitReleases()
     if (this.stopped) return
@@ -290,18 +305,23 @@ export class WakeReconciler {
     if (this.o.prepare) for (const s of this.sessions.keys()) await this.o.prepare(s)
     if (this.stopped) return
     due = this.wakeable(busy)
-    // A mid-turn wake stays eligible for the idle queue until the message is received.
+    // Ordinary messages and uncertain submissions retain the idle fallback; confirmed conflict wakes are once.
     if (busy && !due.length) { this.arm(this.o.busyPollMs ?? BUSY_POLL_MS); return }
     if (!due.length) { this.failures = 0; return }
     const current = this.o.bound()
     if (current?.id !== target.id || current.host !== target.host) { this.arm(this.o.pollMs ?? POLL_MS); return }
     if (busy) {
       if (this.now() < this.midTurnNextAt) { this.arm(this.midTurnNextAt - this.now()); return }
-      const eligible = due.filter(({ s, m }) => (m.priority ?? defaultPriority({ ...m })) !== 'fyi'
+      const eligible = due.filter(({ s, m }) => (isConflictItem(m) ? m.priority : m.priority ?? defaultPriority({ ...m })) !== 'fyi'
         || (m.type === 'done' && m.to === s.me.name && m.fromKind === 'agent' && this.o.ownWorkers?.(s).has(m.from)))
-      const urgent = eligible.filter(item => (this.midTurnAttempts.get(deliveryKey(item)) ?? 0) < MAX_ATTEMPTS)
+      let urgent = eligible.filter(item => (this.midTurnAttempts.get(deliveryKey(item)) ?? 0) < MAX_ATTEMPTS)
       if (eligible.length && !urgent.length) this.degrade('mid-turn-retry-limit')
       if (urgent.length && this.o.midTurn) {
+        if (!this.o.ledger.flushConflicts()) {
+          this.arm(this.o.pollMs ?? POLL_MS)
+          urgent = urgent.filter(({ m }) => !isConflictItem(m))
+          if (!urgent.length) return
+        }
         this.midTurnNextAt = this.now() + (this.o.busyPollMs ?? BUSY_POLL_MS)
         for (const item of urgent) { const key = deliveryKey(item); this.midTurnAttempts.set(key, (this.midTurnAttempts.get(key) ?? 0) + 1) }
         try {
@@ -314,7 +334,9 @@ export class WakeReconciler {
             else this.degrade('submission-uncertain')
             this.lastSentAt = this.now()
             const wakes = this.wakes(), at = this.now()
-            for (const { s, m } of urgent) (wakes[s.roomName] ??= {})[m.id] = { via: 'turn', at, ...(via === 'uncertain-turn' && { uncertain: true }) }
+            for (const { s, m } of urgent) if (!isConflictItem(m) || via === 'uncertain-turn')
+              (wakes[s.roomName] ??= {})[m.id] = { via: 'turn', at, ...(via === 'uncertain-turn' && { uncertain: true }) }
+            if (via === 'turn') this.o.ledger.conflictsWoken(urgent)
             this.persist()
             this.o.log?.(`wake: ${via === 'turn' ? 'submitted' : 'uncertain submission of'} mid-turn pointer to ${target.host} session ${target.id} via turn for ${urgent.map(({ m }) => `${m.type} ${m.id}`).join(', ')}`)
           } else if (via === 'idle') {
@@ -342,6 +364,11 @@ export class WakeReconciler {
       return false
     })
     if (!due.length) { this.degrade('wake-retry-limit'); this.arm(Math.max(1, nextRetry - this.now())); return }
+    if (!this.o.ledger.flushConflicts()) {
+      this.arm(this.o.pollMs ?? POLL_MS)
+      due = due.filter(({ m }) => !isConflictItem(m))
+      if (!due.length) return
+    }
     for (const item of due) {
       const key = deliveryKey(item), count = (this.sendAttempts.get(key) ?? 0) + 1
       this.sendAttempts.set(key, count)
@@ -376,17 +403,18 @@ export class WakeReconciler {
     this.lastSentAt = this.now()
     const at = this.now()
     const wakes = this.wakes()
-    for (const { s, m } of due) (wakes[s.roomName] ??= {})[m.id] = { via, at }
+    for (const { s, m } of due) if (!isConflictItem(m)) (wakes[s.roomName] ??= {})[m.id] = { via, at }
+    this.o.ledger.conflictsWoken(due)
     this.persist()
     this.o.log?.(`wake: woke ${target.host} session ${target.id} via ${via} for ${due.map(({ m }) => `${m.type} ${m.id}`).join(', ')}`)
     if (Number.isFinite(nextRetry)) this.arm(Math.max(1, nextRetry - this.now()))
   }
 
   /** `[room] N things may need you: <from> <kind>; …` — who and what kind, never the text. */
-  private pointer(due: { m: Msg }[]): string {
+  private pointer(due: { m: DeliveryItem }[]): string {
     const count = due.length
     const shown = count > MAX_NAMED ? MAX_NAMED - 1 : MAX_NAMED
-    const phrases = due.slice(0, shown).map(({ m }) => m.type === 'note' && m.from === 'room' && m.fromKind === 'bot' && parseClaimRelease(m.text)
+    const phrases = due.slice(0, shown).map(({ m }) => isConflictItem(m) ? `conflict with ${m.conflict?.other ?? 'a peer'}` : m.type === 'note' && m.from === 'room' && m.fromKind === 'bot' && parseClaimRelease(m.text)
       ? 'Room released a claim of yours'
       : `${m.from.replace(/\s+/g, ' ').trim().slice(0, 40) || 'someone'} ${kindPhrase(m.type)}`)
     if (count > shown) phrases.push(`${count - shown} more`)
@@ -410,7 +438,8 @@ export class WakeReconciler {
     for (const s of this.sessions.keys()) {
       const entries = record.wakes[s.roomName]
       if (!entries || !this.o.ledger.fenced(s)) continue
-      const owed = new Set(this.o.ledger.candidates(s).map(m => m.id))
+      const owed = new Set(this.o.ledger.candidates(s).filter(m => !isConflictItem(m)
+        || entries[m.id]?.uncertain && this.o.ledger.conflictWakeable(s, m)).map(m => m.id))
       for (const id of Object.keys(entries)) if (!owed.has(id)) delete entries[id]
     }
     if (!record.dir) return
@@ -440,6 +469,7 @@ export class WakeReconciler {
     for (const s of this.sessions.keys()) {
       if (!this.o.ledger.fenced(s)) continue
       for (const m of this.o.ledger.candidates(s)) {
+        if (isConflictItem(m)) continue
         const sha = claimReleaseSha(s, m)
         if (!sha) continue
         const key = `${s.roomName}\0${m.id}`

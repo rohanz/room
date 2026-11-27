@@ -6,7 +6,7 @@ import { RoomMemory } from '../src/memory.js'
 import { EventEmitter } from 'node:events'
 import type http from 'node:http'
 import type { WebSocket } from 'ws'
-import { CURRENT_COMPAT, noticeEvidence, workerNoticeId, serializedStore, SETTLE_MS, decodeFrame, encodeFrame } from '@room/hub-core'
+import { CURRENT_COMPAT, serializedStore, SETTLE_MS, decodeFrame, encodeFrame } from '@room/hub-core'
 import { relayConnectionHandler, SecureSession } from '../src/index.js'
 
 const offer = { bootstrap: 1, hub: { min: 1, max: 1 }, schemas: { read: [2], write: [2] }, capabilities: {} }
@@ -56,55 +56,6 @@ describe('encrypted relay bootstrap gate', () => {
     expect(decodeFrame(c.next())).toEqual({ v: 1, re: 'a', ok: true })
     expect(c.next()[0]).toBe(0)
     expect(c.conn._receiver._maxPayload).toBe(100 * 1024 * 1024)
-  })
-
-  it.each([true, false])('encrypted ACK binds optional notice authority only when selected=%s', async capable => {
-    const commonDir = fs.mkdtempSync(path.join(os.tmpdir(), 'room-notice-gate-'))
-    let mono = 0, max: number | undefined
-    const c = connect('&negotiate=1', { commonDir, hub: {
-      lock: { held: () => true } as never, store: serializedStore({ read: async () => max, write: async n => { max = n } }),
-      mono: () => mono, wall: Date.now, holderDead: () => false,
-    } })
-    cleanups.push(() => fs.rmSync(commonDir, { recursive: true, force: true }))
-    c.hello(capable ? CURRENT_COMPAT : { ...CURRENT_COMPAT, capabilities: { 'room.generation': [1], 'room.manifest': [1], 'room.ledger': [1] } })
-    await vi.waitFor(() => expect(c.conn.frames).toHaveLength(1))
-    const selected = decodeFrame(c.next()) as any
-    expect(selected.selection.capabilities['room.notice-lifecycle']).toBe(capable ? 1 : undefined)
-    c.send(encodeFrame({ v: 1, id: 'ack', op: 'compat-ack', selectionId: selected.selectionId }))
-    await vi.waitFor(() => expect(c.conn.frames.length).toBeGreaterThan(0))
-    while (c.conn.frames.length) c.next()
-    mono += SETTLE_MS
-    let serial = 0
-    const request = (body: object) => {
-      const id = `notice-${++serial}`
-      c.send(encodeFrame({ v: 1, id, ...body } as never))
-      const replies = []
-      while (c.conn.frames.length) { const bytes = c.next(); if (bytes[0] === 7) replies.push(decodeFrame(bytes) as any) }
-      return replies.find(reply => reply.re === id)
-    }
-    const grant = request({ op: 'acquire', name: 'A', holder: { sessionId: 'session', pid: 1, startTime: '', executable: '', workerId: 'retirement-worker' } })
-    expect(grant).toMatchObject({ ok: true })
-    const doc = c.docs.values().next().value!, room = doc.room!, lease = { name: 'A', epoch: grant.epoch }
-    const intent = (id: string, expected: number) => ({
-      op: 'notice-lifecycle', generation: doc.hub!.incarnation, lease, action: 'register', producer: 'producer', operation: 'register-original',
-      expected, evidence: noticeEvidence(room, ['A', 'B']), episode: 'registration',
-      msg: { id, type: 'contract', from: 'room', fromKind: 'agent', to: 'A', path: 'x', symbol: 'api', text: 'unchanged body', priority: 'notify' },
-    })
-    const originalId = capable ? workerNoticeId('cf:original', ['retirement-worker'])! : 'cf:original'
-    const original = intent(originalId, 0)
-    if (capable) {
-      expect(request(original)).toMatchObject({ ok: true, managed: true })
-      expect(request({ ...original, operation: 'forbidden-complete', expected: 1, transition: 'complete' })).toMatchObject({ ok: false, reason: 'invalid' })
-      expect(room.outcomes.has(originalId)).toBe(false)
-      expect(request({ op: 'notice-lifecycle', generation: doc.hub!.incarnation, lease, action: 'retire', producer: 'retirement', expected: 0,
-        operation: 'retire-worker', workerId: 'retirement-worker', targets: [{ producer: 'producer', expected: 1, ids: [originalId], episodes: { [originalId]: 'registration' } }] })).toMatchObject({ ok: true, managed: true })
-      expect(room.outcomes.has(originalId)).toBe(true)
-    } else {
-      expect(request(original)).toMatchObject({ ok: false, reason: 'version' })
-      expect(request({ op: 'post', lease, auto: true, msg: original.msg })).toMatchObject({ ok: true })
-      expect(room.outcomes.has(originalId)).toBe(false)
-      expect(room.doc.getMap('noticeInventory').size).toBe(0)
-    }
   })
 
   it('rejects duplicate hello and incorrect selection ACK without sync', async () => {

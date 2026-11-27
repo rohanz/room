@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, manifestKey, validParticipantName, type ManifestEntry } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey, openConflicts, validParticipantName, type ManifestEntry } from '@room/shared'
 import { epochPublication } from '@room/shared/testing'
 import { ConflictSet } from '../src/conflict-set.js'
 import { closeRegistryForDir, WorkerRegistry } from '../src/worker-registry.js'
@@ -40,7 +40,10 @@ it.each(['R+review notes', 'R+' + 'x'.repeat(65), 'R+review-notes'])('keeps chec
   const reads = vi.spyOn(WorkerRegistry.prototype, 'snapshot')
   try {
     await expect(set.reconcile('unrelated ordinary name')).resolves.toBeUndefined()
-    expect(room.messages().filter(m => m.type === 'merge-conflict' && m.to === 'A')).toHaveLength(1)
+    expect(openConflicts(room, 'A')).toEqual([
+      expect.objectContaining({ kind: 'merge', other: 'B', priority: 'notify',
+        slots: [expect.objectContaining({ path: 'x', settled: 'conflict' })] }),
+    ])
     expect(reads.mock.calls.some(([query]) => query?.tag === bystander.slice(bystander.indexOf('+') + 1))).toBe(bystander === 'R+review-notes')
   } finally {
     reads.mockRestore(); set.stop(); seam.hub.close(); awareness.destroy(); awareness.doc.destroy(); room.doc.destroy()

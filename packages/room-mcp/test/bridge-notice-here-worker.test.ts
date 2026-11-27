@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, manifestKey, participantRecord } from '@room/shared'
-import type { Identity, ManifestEntry, Msg } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey, openConflicts, participantRecord } from '@room/shared'
+import type { Identity, ManifestEntry, RoomDoc as RoomDocType } from '@room/shared'
 import { rulesFromText } from '@room/roomd/policy'
 import { projectWorkers } from '../src/worker-projector.js'
 import { Bridge, revokeLeadProjections } from '../src/bridge.js'
@@ -147,8 +147,8 @@ async function fixture(texts: [string | undefined, string | undefined] = [ORDERS
   return { rohan, kieran, base, sync }
 }
 
-function warnings(messages: Msg[], recipient: string): Msg[] {
-  return messages.filter(m => m.to === recipient && (m.type === 'merge-conflict' || m.type === 'conflict'))
+function conflicts(room: RoomDocType, recipient: string) {
+  return openConflicts(room, recipient).filter(c => c.kind === 'merge' || c.kind === 'edit-in-claim' || c.kind === 'claims')
 }
 
 
@@ -180,11 +180,9 @@ it("keeps a possible conflict with another lead's where:here worker at its ordin
   expect(t.kieran.team.room.workerViewOf(name)).toMatchObject({ mode: 'here', lead: 'Kieran' })
   expect(t.kieran.team.room.manifestHead.get(name)?.projectedBy).toBeUndefined()
   await t.sync()
-  const notes = warnings(t.rohan.local.room.messages(), 'Rohan')
+  const notes = conflicts(t.rohan.team.room, 'Rohan')
   expect(notes).toHaveLength(1)
   expect.soft(notes[0]).toMatchObject({ priority: 'fyi' })
   expect.soft('text' in notes[0] && notes[0].text).not.toContain('two leads')
-  expect(warnings(t.rohan.local.room.messages(), t.rohan.workerName)).toEqual([
-    expect.objectContaining({ priority: 'fyi' }),
-  ])
+  expect(t.rohan.local.room.messages().filter(m => m.type === 'note' && m.to === t.rohan.workerName)).toEqual([])
 })

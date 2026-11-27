@@ -77,11 +77,10 @@ describe('shared room views', () => {
 
 it('returns only populated line detail sections without missing-data placeholders', () => {
   expect(lineDetail({}).sections).toEqual([{ label: 'Line', rows: ['unchanged from base'] }])
-  const detail = lineDetail({ conflicts: [{ people: ['a', 'b'], resolved: false }] })
+  const detail = lineDetail({ conflicts: [{ people: ['a', 'b'] }] })
   expect(detail.sections.map(s => s.label)).toEqual(['Line', 'Conflict'])
   expect(detail.sections.every(s => s.rows.length > 0 && s.rows.every(Boolean))).toBe(true)
   expect(JSON.stringify(detail.sections)).not.toContain('unavailable')
-  expect(lineDetail({ conflicts: [{ people: ['a', 'b'], resolved: true }] }).sections.map(s => s.label)).toEqual(['Line', 'Conflict'])
 })
 
 it('distinguishes a pending lead-shutdown stop from a worker that actually stopped', async () => {

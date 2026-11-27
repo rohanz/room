@@ -1,7 +1,7 @@
 import type * as Y from 'yjs'
 import type { RoomDoc, ParticipantHolder, ParticipantGit } from './doc.js'
 import type { ManifestHead, ManifestEntry } from './manifest.js'
-import type { WorkerView } from './types.js'
+import type { ShareLevel, WorkerView } from './types.js'
 
 /** Immutable read cache, deliberately separate from live CRDT publication roots.
  * Restoring copied live roots would give old text new CRDT identities that could
@@ -20,33 +20,35 @@ export interface CompletedPublication {
 /** Immutable revision keys preserve narrowing even when no text can be saved.
  * A map keyed only by name would let a copied, older snapshot win by Yjs client ID.
  * semRev matters: incomplete/intent transitions need not increment content rev. */
-interface PublicationRevision { name: string; epoch: number; semRev: number; rev: number }
+interface PublicationRevision { name: string; epoch: number; semRev: number; rev: number; level?: ShareLevel }
 const REVISIONS = 'completedPublicationRevisions'
 const revisionKey = (r: PublicationRevision): string => `${r.name}\0${r.epoch}\0${r.semRev}\0${r.rev}`
 const compareRevision = (a: PublicationRevision, b: PublicationRevision): number =>
   a.epoch - b.epoch || a.semRev - b.semRev || a.rev - b.rev
 const publicationRevision = (p: CompletedPublication): PublicationRevision =>
-  ({ name: p.worker.name, epoch: p.holder.epoch, semRev: p.head.semRev, rev: p.head.rev })
+  ({ name: p.worker.name, epoch: p.holder.epoch, semRev: p.head.semRev, rev: p.head.rev, level: p.head.level })
+const hasPublicationRevision = (p: CompletedPublication): boolean => typeof p?.worker?.name === 'string'
+  && Number.isSafeInteger(p.holder?.epoch) && Number.isSafeInteger(p.head?.semRev) && Number.isSafeInteger(p.head?.rev)
 
 /** Maximum per name, including live policy changes that have no retained payload. */
 function revisions(doc: Y.Doc): Map<string, PublicationRevision> {
   const latest = new Map<string, PublicationRevision>()
   const see = (r: PublicationRevision) => {
     const old = latest.get(r.name)
-    if (!old || compareRevision(r, old) > 0) latest.set(r.name, r)
+    if (!old || compareRevision(r, old) > 0 || compareRevision(r, old) === 0 && r.level !== undefined) latest.set(r.name, r)
   }
   for (const r of doc.getMap<PublicationRevision>(REVISIONS).values()) see(r)
-  for (const p of doc.getMap<CompletedPublication>('completedPublications').values()) see(publicationRevision(p))
-  const names = new Set([...latest.keys(), ...[...doc.getMap<WorkerView>('workerViews').values()].map(worker => worker.name)])
+  for (const p of doc.getMap<CompletedPublication>('completedPublications').values()) if (hasPublicationRevision(p)) see(publicationRevision(p))
   const participants = doc.getMap<ParticipantHolder>('participants')
   const heads = doc.getMap<ManifestHead>('manifestHead')
+  const names = new Set([...latest.keys(), ...heads.keys(), ...[...doc.getMap<WorkerView>('workerViews').values()].map(worker => worker.name)])
   for (const name of names) {
     const holder = participants.get(`${name}\0holder`)
     // A newer holder can have no publication yet; it still supersedes old text.
     if (holder && Number.isSafeInteger(holder.epoch)) see({ name, epoch: holder.epoch, semRev: -1, rev: -1 })
     const head = heads.get(name)
     const epoch = head && Number(head.fence)
-    if (head && epoch !== undefined && Number.isSafeInteger(epoch)) see({ name, epoch, semRev: head.semRev, rev: head.rev })
+    if (head && epoch !== undefined && Number.isSafeInteger(epoch)) see({ name, epoch, semRev: head.semRev, rev: head.rev, level: head.level })
   }
   return latest
 }
@@ -61,6 +63,12 @@ const matchesRevision = (p: CompletedPublication, latest: Map<string, Publicatio
 export function publicationRevisionCurrent(doc: Y.Doc, name: string, head: ManifestHead): boolean {
   const known = revisions(doc).get(name)
   return !known || compareRevision({ name, epoch: Number(head.fence), semRev: head.semRev, rev: head.rev }, known) >= 0
+}
+
+/** No payload, paths or inferred withdrawal: older records without a published level are unknown. */
+export function publicationPolicyLevel(doc: Y.Doc, name: string): { epoch: number; level: ShareLevel } | undefined {
+  const known = revisions(doc).get(name)
+  return known?.level && ['intent', 'declared', 'full'].includes(known.level) ? { epoch: known.epoch, level: known.level } : undefined
 }
 
 function contradicted(doc: Y.Doc, p: CompletedPublication): boolean {
@@ -118,7 +126,7 @@ export function completedPublicationOf(room: RoomDoc, name: string): CompletedPu
     return p && matchesRevision(p, latest) && !contradicted(room.doc, p) ? p : undefined
   }
   return [...room.doc.getMap<CompletedPublication>('completedPublications').values()]
-    .find(p => p.worker.id === view.id && p.worker.run === view.run && p.worker.name === name
+    .find(p => hasPublicationRevision(p) && p.worker.id === view.id && p.worker.run === view.run && p.worker.name === name
       && matchesRevision(p, latest) && !contradicted(room.doc, p))
 }
 

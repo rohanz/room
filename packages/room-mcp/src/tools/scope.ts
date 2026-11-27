@@ -1,3 +1,4 @@
+import { sessionConflicts } from './state-conflicts.js'
 import { retainedWorkerLines } from '../worker-retained.js'
 import path from 'node:path'
 import { createSessionBinding } from '../binding.js'
@@ -21,7 +22,7 @@ import type { LocalWorker } from '../worker-status.js'
 import { describeWhere } from '../choice.js'
 import { browserViewLine, parseServer, refreshBrowserUrl, type Session } from '../session.js'
 import { LOCAL } from '../session.js'
-import { openMergeConflicts } from '../conflict-set.js'
+import { formatConflictLine } from '@room/shared'
 import { trustedWorker, RO, RW, int, str, strs, type Handler, type HandlerState, type ToolDef } from './context.js'
 import { importedHistory } from '@room/shared'
 
@@ -86,7 +87,11 @@ export function handlers(state: HandlerState): Record<string, Handler> {
           who.set(n, entry?.state === 'shared' ? 'shared' : 'not shared')
         }
       }
-      for (const c of openMergeConflicts(s.room, s.me.name)) if (c.path === p) out.push(`conflicts with ${c.other}'s version${c.lines.length ? ` at lines ${c.lines.join(', ')}` : ''}`)
+      for (const { session: x, conflict: c } of sessionConflicts(inRooms)) if (c.slots.some(slot => slot.path === p)) {
+        out.push(tagged(x, formatConflictLine(c)))
+        if (c.slots.length > 1) for (const slot of c.slots.filter(slot => slot.path === p))
+          out.push(`  ${slot.path}${slot.lines?.length ? ` at lines ${slot.lines.join(', ')}` : ''}`)
+      }
       if (who.size) out.push(`uncommitted changes by: ${[...who].sort(([a], [b]) => a.localeCompare(b)).map(([n, state]) => `${n} (${state})`).join(', ')}`)
       return out.length ? `${p}:${r.from}-${r.to}\n${out.join('\n')}` : `${p}:${r.from}-${r.to}: no claims, no scopes, nobody else has changed it`
   }
@@ -145,7 +150,8 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       const publisher = publisherLine(s)
       const people = new Set(presences(s).filter(p => p.user.name !== s.me.name).map(p => p.user.name)).size
       const participants = `${people} other participant${people === 1 ? '' : 's'}`
-      const noUnseen = !ledger.candidates(s).length
+      const conflicts = sessionConflicts([s, ...rooms.all().filter(x => x !== s)])
+      const noUnseen = !ledger.candidates(s).length && !conflicts.length
       const sharingLevel = shareOf(s, s.me.name)
       const out: string[] = [s.local ? 'local: nothing leaves this machine' : publisher
         ? `team room: ${publisher} (${participants} in the room)`
@@ -285,11 +291,13 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       }
       if (skipped.size.length) out.push(`  ${skipped.size.length} of your changed files are not shared: too large`)
       if (skipped.budget.length) out.push(`  ${skipped.budget.length} of your changed files are not shared: sharing budget exceeded`)
-      // Conflict notices name a peer and up to eight files; every file is here.
-      const merges = openMergeConflicts(s.room, s.me.name)
-      if (merges.length) {
-        out.push(`files that conflict with others' versions (${merges.length}):`)
-        for (const c of merges) out.push(`  - ${c.path} with ${c.other}${c.lines.length ? ` at lines ${c.lines.join(', ')}` : ''}`)
+      if (conflicts.length) {
+        out.push(`open conflicts and overlaps (${conflicts.length}):`)
+        for (const { session, conflict: c } of conflicts) {
+          out.push(`  - ${session === s ? '' : '[workers room] '}${formatConflictLine(c)}`)
+          if (c.slots.length > 1) for (const slot of c.slots)
+            out.push(`    ${slot.path}${slot.lines?.length ? ` at lines ${slot.lines.join(', ')}` : ''}`)
+        }
       }
       const waits = await waitingOn(s)
       if (waits.length) { out.push('waiting on (others\' planned changes to symbols you use):'); out.push(...waits) }
@@ -304,7 +312,10 @@ export function handlers(state: HandlerState): Record<string, Handler> {
       for (const x of s.room.messages()) if (x.copyOf && x.to === s.me.name) copiesToMe.set(x.copyOf, [...copiesToMe.get(x.copyOf) ?? [], x.id])
       const shown = (id: string) => owed.has(id) || handed(id)
       const unread = (x: Msg) => a.all === true || (x.from !== s.me.name && !shown(x.id) && !(copiesToMe.get(x.id) ?? []).some(shown))
-      const msgs = (history ? s.room.messages().filter(x => !importedHistory(s.room, x)).slice(all ? -10 : -30) : s.room.lastMessages(all ? 10 : 30))
+      const msgs = s.room.messages()
+        .filter(x => !['merge-conflict', 'conflict', 'contract'].includes(x.type))
+        .filter(x => !history || !importedHistory(s.room, x))
+        .slice(all ? -10 : -30)
         .filter(x => !(x.to && x.to !== s.me.name && x.from !== s.me.name))
         .filter(x => all || x.to === s.me.name || x.from === s.me.name || x.type === 'base' || msgInMyAreas(s, x))
         .filter(unread)

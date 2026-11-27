@@ -1,3 +1,4 @@
+import * as conflictState from '@room/shared'
 import { publishFixture } from './fixtures/manifest.js'
 /**
  * A lead's tools with a bridged workers room: room_done keeps the mirrors of running workers (B2),
@@ -10,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, gitBlobHash, manifestKey, owed, type ManifestEntry } from '@room/shared'
+import { RoomDoc, gitBlobHash, manifestKey, openConflicts, type ManifestEntry } from '@room/shared'
 import type { Identity } from '@room/shared'
 import { createTools } from '../src/tools.js'
 import type { Session } from '../src/session.js'
@@ -23,6 +24,7 @@ import { prepareWorktree } from '../src/worker-git.js'
 import { closeRegistryForDir, registryForDir } from '../src/worker-registry.js'
 import { workerByTag } from './registry-fixture.js'
 import { rulesFromText } from '@room/roomd/policy'
+import { isConflictItem } from '../src/ledger.js'
 
 let dir: string
 let base: string
@@ -160,7 +162,7 @@ describe('a worker exiting without room_done wakes the lead (B3)', () => {
 })
 
 
-it("delivers a projected worker conflict to the lead through the workers-room inbox and host wake path", async () => {
+it("reads a projected worker conflict in the team room and sends the worker an ordinary private note", async () => {
   const woken: string[] = []
   const t = setupBridged(async (_id, text) => { woken.push(text) })
   await t.leadTools.call('room_spawn', { tag: 'money', task: 'cents', where: 'local' })
@@ -169,6 +171,8 @@ it("delivers a projected worker conflict to the lead through the workers-room in
   team.daemon.fence = '1'; workers.daemon.fence = '1'
   team.lease = { fence: () => '1', paused: () => undefined } as Session['lease']
   workers.lease = { fence: () => '1', paused: () => undefined } as Session['lease']
+  // Production attaches the primary through join; this fixture injects that session directly.
+  t.leadTools.attachHooks(team)
   const publish = (s: Session, name: string, text: string | undefined, projected = false) => {
     epochPublication(s.room, name, base, 1)
     const entries = new Y.Map<ManifestEntry>()
@@ -191,15 +195,32 @@ it("delivers a projected worker conflict to the lead through the workers-room in
   publish(team, 'Kieran', 'x = 4\n')
   try {
     await reconcileProjectedConflicts({ team, workers, owner: workerId.name })
+    // The first projected pass can read a publication as not yet settled; the next pass confirms it.
+    await vi.waitFor(() => expect(openConflicts(team.room, lead.name)).toHaveLength(1))
+    expect(t.leadTools.ledger.candidates(team).filter(isConflictItem)).toHaveLength(1)
     await vi.waitFor(() => expect(woken).toHaveLength(1))
-    const notices = workers.room.messages().filter(m => m.type === 'merge-conflict')
-    expect(notices.map(m => m.to).sort()).toEqual([lead.name, workerId.name].sort())
-    expect(notices.every(m => m.priority === 'notify')).toBe(true)
-    expect(owed(workers.room, lead, { frontier: 0, routed: new Set() }, {}).some(m => m.type === 'merge-conflict')).toBe(true)
+    const conflicts = [openConflicts(team.room, lead.name), openConflicts(team.room, workerId.name)].flat()
+    expect(conflicts.map(c => c.owner).sort()).toEqual([lead.name, workerId.name].sort())
+    expect(conflicts.every(c => c.priority === 'notify')).toBe(true)
+    expect(t.leadTools.ledger.candidates(team).filter(isConflictItem)).toEqual([
+      expect.objectContaining({ status: 'open', priority: 'notify', to: lead.name,
+        conflict: expect.objectContaining({ other: 'Kieran', slots: [expect.objectContaining({ path: 'app.py' })] }) }),
+    ])
     expect(woken[0]).not.toContain('x = 3')
     const inbox = await t.leadTools.call('room_state', {})
     expect(inbox).toContain('CONFLICT')
-    expect(inbox).toContain('[workers room]')
+    expect(inbox).not.toContain('[workers room]')
+    expect(openConflicts(workers.room, lead.name)).toEqual([])
+    expect(openConflicts(workers.room, workerId.name)).toEqual([])
+    await vi.waitFor(() => expect(workers.room.messages().filter(m => m.type === 'note' && m.to === workerId.name && m.text?.includes('CONFLICT'))).toHaveLength(1))
+    const stillOpen = conflictState.openConflicts(team.room, lead.name)
+    expect(stillOpen).toHaveLength(1)
+    expect(conflictState.openConflicts(workers.room, lead.name)).toEqual([])
+    for (const all of [false, true]) {
+      const reread = await t.leadTools.call('room_state', { all })
+      expect(reread).toContain(conflictState.formatConflictLine(stillOpen[0]))
+      expect(reread).not.toContain('no action needed')
+    }
     expect(team.room.messages().filter(m => m.type === 'merge-conflict')).toEqual([])
     const entry = team.room.manifest.get(manifestKey('Kieran', '1'))!.get('app.py')!
     const { hash: _hash, ...hidden } = entry
@@ -207,11 +228,12 @@ it("delivers a projected worker conflict to the lead through the workers-room in
     const head = team.room.manifestHead.get('Kieran')!
     team.room.manifestHead.set('Kieran', { ...head, level: 'declared', textPrefixes: [], rev: 2, semRev: 2 })
     await reconcileProjectedConflicts({ team, workers, owner: workerId.name })
-    const possible = workers.room.messages().filter(m => m.type === 'merge-conflict' && m.priority === 'fyi')
-    expect(possible.map(m => m.to).sort()).toEqual([lead.name, workerId.name].sort())
+    const possible = [openConflicts(team.room, lead.name), openConflicts(team.room, workerId.name)].flat()
+    expect(possible.map(c => c.owner).sort()).toEqual([lead.name, workerId.name].sort())
+    expect(possible.every(c => c.priority === 'fyi' && c.slots.every(slot => slot.settled === 'possible'))).toBe(true)
     const nextInbox = await t.leadTools.call('room_state', {})
     expect(nextInbox).toContain('possible conflict')
-    expect(nextInbox).toContain('[workers room]')
+    expect(nextInbox).not.toContain('[workers room]')
     expect(woken).toHaveLength(1) // Ordinary fyi priority waits for a tool; it does not wake.
   } finally {
     await t.leadTools.call('room_leave', { force: true })

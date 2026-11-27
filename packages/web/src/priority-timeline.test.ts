@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { JSDOM } from 'jsdom'
-import { RoomDoc, type ConflictSpan, type Msg } from '@room/shared'
+import { RoomDoc, type Msg } from '@room/shared'
 import type { Conn } from './conn.ts'
 import {
   CHIP_ROW_LIMIT,
@@ -162,12 +162,6 @@ describe('timeline priority chips', () => {
     const third = setup([scope('scope-3', 'Ada', 'api', 1)], undefined, blocked)
     expect(() => third.priority('notify').click()).not.toThrow()
   })
-})
-
-it('keeps conflict spans regardless of selected priorities', () => {
-  const conflict = {} as ConflictSpan
-  const entry = { message: note('conflict-event', 'room', 1, 'fyi'), conflict }
-  expect(filterPriorityTimeline([entry], new Set<TimelinePriority>(['interrupt'])).window).toEqual([entry])
 })
 
 it('keeps a hidden parent and episode header when a shown reply survives', () => {

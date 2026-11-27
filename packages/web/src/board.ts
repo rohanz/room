@@ -1,8 +1,9 @@
+import { currentConflicts } from './conflicts.ts'
 import { subscribeRender } from './scheduler.ts'
 import { activityLabel, displayName, formatCount, areaMembershipSummary, participantClaimLine, personLine, type NoteMsg, type Participant, type ShareLevel } from '@room/shared'
 import type { Conn } from './conn.ts'
 import { h as element, conflictCard, messageBody, participantInput, participantGroups, groupedPeople, compactChips, timelinePeople, TIMELINE_WINDOW, relativeTime } from './panels.ts'
-import { collapseConflictTimeline } from './timeline.ts'
+import { timelineEntries } from './timeline.ts'
 
 import { bindTooltip } from './tooltip.ts'
 
@@ -18,18 +19,19 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
   const grid = h('div', { class: 'board-grid' })
   const offline = h('details', { class: 'offline-group' })
   const feed = h('div', { class: 'board-feed' })
-  const filters = h('div', { class: 'filter-chips', ariaLabel: 'Filter timeline' })
+  const filters = h('div', { class: 'filter-chips', ariaLabel: 'Filter room activity' })
+  const conflictList = h('div', { class: 'open-conflict-list' })
+  const openSection = h('section', { class: 'open-conflicts', ariaLabel: 'Open conflicts' }, h('h2', {}, 'Open conflicts'), conflictList)
   const hide = h('button', { type: 'button', ariaPressed: 'false' }, 'Hide offline')
   let hideOffline = false
   try { hideOffline = localStorage.getItem('room.hideOffline') === 'true' } catch { /* storage may be disabled */ }
   const element = h('main', { class: 'board scroll' },
     h('div', { class: 'board-heading' }, h('div', {}, h('h2', {}, 'People at work'), h('p', { class: 'muted' }, 'Live intent, shared changes, and the conversation around them.')),
       h('div', { class: 'view-switcher offline-toggle' }, hide)),
-    grid, offline,
-    h('section', { class: 'board-timeline' }, h('div', { class: 'board-heading' }, h('h2', {}, 'Timeline'), h('span', { class: 'muted' }, 'Newest first')), filters, feed))
+    grid, offline, filters, openSection,
+    h('section', { class: 'board-timeline' }, h('div', { class: 'board-heading' }, h('h2', {}, 'Timeline'), h('span', { class: 'muted' }, 'Newest first')), feed))
   let showMoreFilters = false, windowSize = TIMELINE_WINDOW
   let personFilter: string | null = null, areaFilter: string | null = null
-  const expandedConflicts = new Set<string>()
   const expandedWorkers = new Set<string>()
   const render = () => {
     const input = participantInput(conn)
@@ -65,22 +67,24 @@ export function boardPanel(conn: Conn, inspect: (name: string) => void): HTMLEle
     hide.classList.toggle('active', hideOffline)
     offline.hidden = hideOffline || !grouped.offline.length
     offline.replaceChildren(h('summary', {}, `${groups.offlineTeammates.length} offline · worker history`), h('div', { class: 'board-grid' }, ...grouped.offline))
-    const events = collapseConflictTimeline(messages, conn.room.openClaims()).reverse()
-    const areaOf = (m: typeof messages[number]) => 'area' in m && typeof m.area === 'string' ? m.area : conn.room.scope(m.from)?.area ?? 'other'
+    const events = timelineEntries(conn.room).reverse()
+    const conflicts = currentConflicts(conn.room)
+    const areaOf = (m: Pick<typeof messages[number], 'from'>) => 'area' in m && typeof m.area === 'string' ? m.area : conn.room.scope(m.from)?.area ?? 'other'
     const chip = (text: string, active: boolean, action: () => void) => h('button', { class: `filter-chip${active ? ' active' : ''}`, ariaPressed: String(active), onclick: action }, text)
-    const matching = events.filter(({ message: m, conflict }) => (!personFilter || m.from === personFilter || conflict?.people.includes(personFilter)) && (!areaFilter || areaOf(m) === areaFilter))
+    const matching = events.filter(({ message: m }) => (!personFilter || m.from === personFilter) && (!areaFilter || areaOf(m) === areaFilter))
+    const cards = conflicts.filter(c => (!personFilter || [c.owner, c.other].includes(personFilter)) && (!areaFilter || [c.owner, c.other].some(p => conn.room.scope(p)?.area === areaFilter)))
     const visible = matching.slice(0, windowSize)
-    const prominent = new Set([...groups.active.map(p => p.name), ...timelinePeople(visible.flatMap(e => e.conflict ? e.conflict.events : [e.message]))])
+    const prominent = new Set([...groups.active.map(p => p.name), ...cards.flatMap(c => [c.owner, c.other]), ...timelinePeople(visible.map(e => e.message))])
     const prominentAreas = new Set([...groups.active.flatMap(p => p.scope ? [p.scope.area] : []), ...visible.map(e => areaOf(e.message))].filter(area => !area.endsWith('/')))
-    const names = [...new Set([...groups.active.map(p => p.name), ...groups.offlineTeammates.map(p => p.name), ...groups.retiredWorkers.map(w => w.name), ...timelinePeople(messages, [...groups.active, ...groups.offlineTeammates].map(p => p.name))])].sort()
+    const names = [...new Set([...conflicts.flatMap(c => [c.owner, c.other]), ...groups.active.map(p => p.name), ...groups.offlineTeammates.map(p => p.name), ...groups.retiredWorkers.map(w => w.name), ...timelinePeople(messages, [...groups.active, ...groups.offlineTeammates].map(p => p.name))])].sort()
     const areas = [...new Set([...events.map(e => areaOf(e.message)), ...prominentAreas])].sort()
     filters.replaceChildren(chip('All', !personFilter && !areaFilter, () => { personFilter = areaFilter = null; windowSize = TIMELINE_WINDOW; render() }),
       ...compactChips([
         ...names.map(name => ({ key: name, selected: personFilter === name, node: chip(named(name), personFilter === name, () => { personFilter = personFilter === name ? null : name; windowSize = TIMELINE_WINDOW; render() }) })),
         ...areas.map(area => ({ key: 'area:' + area, selected: areaFilter === area, node: chip(`Area: ${area}`, areaFilter === area, () => { areaFilter = areaFilter === area ? null : area; windowSize = TIMELINE_WINDOW; render() }) })),
       ], new Set([...prominent, ...[...prominentAreas].map(a => 'area:' + a), ...(personFilter ? [personFilter] : []), ...(areaFilter ? ['area:' + areaFilter] : [])]), showMoreFilters, open => { showMoreFilters = open }))
-    feed.replaceChildren(...visible.map(({ message: m, conflict }) => {
-      if (conflict) return conflictCard(conflict, expandedConflicts)
+    conflictList.replaceChildren(...(cards.length ? cards.map(conflictCard) : [h('p', { class: 'muted' }, 'No open conflicts')]))
+    feed.replaceChildren(...visible.map(({ message: m }) => {
       const kind = m.type === 'done' || (m.type === 'note' && m.text.startsWith('done')) ? 'done' : m.priority
       return h('article', { class: 'feed-event' }, h('time', { title: new Date(m.at).toLocaleString() }, relativeTime(m.at)), h('div', {}, h('div', { class: 'feed-meta' }, h('strong', { class: 'mono' }, displayName({ name: m.from, kind: m.fromKind })), h('span', { class: 'area-chip' }, areaOf(m))), h('div', {}, ...messageBody(m))), h('span', { class: `priority ${kind}` }, kind))
     }))

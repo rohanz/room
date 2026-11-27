@@ -6,8 +6,8 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import * as Y from 'yjs'
 import { Awareness, applyAwarenessUpdate, encodeAwarenessUpdate } from 'y-protocols/awareness'
-import { RoomDoc, completedPublicationOf, gitBlobHash, manifestKey, manifestPaths, memorySnapshot, owed, participantRecord, participantsView, snapshot, versionOf } from '@room/shared'
-import type { Identity, ManifestEntry, Msg } from '@room/shared'
+import { RoomDoc, completedPublicationOf, gitBlobHash, manifestKey, manifestPaths, memorySnapshot, openConflicts, participantRecord, participantsView, snapshot, versionOf } from '@room/shared'
+import type { Identity, ManifestEntry, RoomDoc as RoomDocType } from '@room/shared'
 import { rulesFromText } from '@room/roomd/policy'
 import { projectWorkers } from '../src/worker-projector.js'
 import { Bridge, revokeLeadProjections } from '../src/bridge.js'
@@ -147,8 +147,10 @@ async function fixture(texts: [string | undefined, string | undefined] = [ORDERS
   return { rohan, kieran, base, sync }
 }
 
-function warnings(messages: Msg[], recipient: string): Msg[] {
-  return messages.filter(m => m.to === recipient && (m.type === 'merge-conflict' || m.type === 'conflict'))
+function relays(room: RoomDocType, to: string) { return room.messages().filter(m => m.type === 'note' && m.to === to && m.text?.startsWith('[team room]')) }
+
+function conflicts(room: RoomDocType, recipient: string) {
+  return openConflicts(room, recipient).filter(c => c.kind === 'merge' || c.kind === 'edit-in-claim' || c.kind === 'claims')
 }
 
 describe('two-clone projected worker conflict reproductions (2026-11-15)', () => {
@@ -168,23 +170,13 @@ describe('two-clone projected worker conflict reproductions (2026-11-15)', () =>
       // Inspect the actual worker/worker slot: this proves the pair was evaluated, not filtered out.
       const slot = own.team.room.doc.getMap('conflicts').get(slotKey(own.workerName, 'merge', other.workerName, PATH))
       expect.soft(slot, `worker pair result: ${JSON.stringify(slot)}`).toMatchObject({ status: expect.stringMatching(/^(conflict|possible)$/) })
-      for (const recipient of [own.team.me.name, own.workerName]) {
-        const delivered = warnings(own.local.room.messages(), recipient)
-        // The lead's copy wakes it; the worker's is fyi.
-        expect(delivered).toEqual([expect.objectContaining({ priority: recipient === own.workerName ? 'fyi' : 'notify', noticeSubjects: [{ name: own.workerName, workerId: own.record.id }, { name: other.workerName, workerId: other.record.id }] })])
-        const text = 'text' in delivered[0] ? delivered[0].text : ''
-        expect(text).toContain(other.team.me.name)
-        expect(text).toContain(other.workerName)
-        expect(text).toContain(PATH)
-        expect(text).toContain('file contents are not shared')
-        expect(text).toContain('cannot check whether these edits merge cleanly')
-        expect(text).toContain('collect and preview')
-      }
-      expect(warnings(own.team.room.messages(), own.team.me.name)).toEqual([])
+      expect(relays(own.local.room, own.workerName)).toEqual([])
+      expect(conflicts(own.local.room, own.workerName)).toEqual([])
+      expect(conflicts(own.team.room, own.team.me.name)).toEqual([expect.objectContaining({ priority: 'notify' })])
     }
   })
 
-  it('routes hashless possible conflicts to both worker and lead in their workers room', async () => {
+  it('keeps hashless possible conflicts quiet for workers and shows leads their native team state', async () => {
     const t = await fixture()
     // Control: the same pair with hashes withheld takes the existing possible-conflict branch.
     await t.rohan.team.policyStore.setRequested('declared')
@@ -192,15 +184,12 @@ describe('two-clone projected worker conflict reproductions (2026-11-15)', () =>
     await t.sync()
     for (const [own, other] of [[t.rohan, t.kieran], [t.kieran, t.rohan]]) {
       expect(own.team.room.doc.getMap('conflicts').get(slotKey(own.workerName, 'merge', other.workerName, PATH))).toMatchObject({ status: 'possible' })
-      expect(warnings(own.local.room.messages(), own.workerName)).toEqual([
-        expect.objectContaining({ type: 'merge-conflict', to: own.workerName, path: PATH, priority: 'fyi' }),
-      ])
-      expect(warnings(own.local.room.messages(), own.team.me.name)).toEqual([
-        expect.objectContaining({ type: 'merge-conflict', to: own.team.me.name, path: PATH, priority: 'notify' }),
-      ])
-      expect(warnings(own.team.room.messages(), own.team.me.name)).toEqual([])
+      expect(relays(own.local.room, own.workerName)).toEqual([])
+      expect(conflicts(own.local.room, own.workerName)).toEqual([])
+      expect(conflicts(own.team.room, own.team.me.name)).toEqual([expect.objectContaining({ priority: 'notify' })])
     }
   })
+
 
   it('warns a teammate who edits a finished, exited, uncollected projected worker path', async () => {
     const t = await fixture()
@@ -228,7 +217,7 @@ describe('two-clone projected worker conflict reproductions (2026-11-15)', () =>
     publish(t.kieran.team, t.kieran.team.me.name, t.base, NAME)
     await t.kieran.conflicts.reconcile('teammate edits after worker exit')
     expect.soft(manifestPaths(t.kieran.team.room, t.rohan.workerName), 'uncollected completed path stays projected').toContain(PATH)
-    expect.soft(warnings(t.kieran.team.room.messages(), t.kieran.team.me.name), 'teammate warned after completed worker exits').not.toEqual([])
+    expect.soft(conflicts(t.kieran.team.room, t.kieran.team.me.name), 'teammate warned after completed worker exits').not.toEqual([])
   })
 
   it('warns the teammate about the same known worker version while the source is still live', async () => {
@@ -238,41 +227,17 @@ describe('two-clone projected worker conflict reproductions (2026-11-15)', () =>
     git(t.kieran.team.dir, 'hash-object', '-w', known)
     publish(t.kieran.team, t.kieran.team.me.name, t.base, NAME)
     await t.sync()
-    expect(warnings(t.kieran.team.room.messages(), t.kieran.team.me.name)).toContainEqual(
-      expect.objectContaining({ type: 'merge-conflict', path: PATH, to: t.kieran.team.me.name }),
+    expect(conflicts(t.kieran.team.room, t.kieran.team.me.name)).toContainEqual(
+      expect.objectContaining({ owner: t.kieran.team.me.name, slots: [expect.objectContaining({ path: PATH })] }),
     )
   })
-
-  it('deduplicates 21 reconciles per recipient, clears on revert, and ends both notices on retirement', async () => {
-    const t = await fixture()
-    await t.sync()
-    for (let i = 0; i < 21; i++) for (const own of [t.rohan, t.kieran])
-      await reconcileProjectedConflicts({ team: own.team, workers: own.local, owner: own.workerName })
-    for (const own of [t.rohan, t.kieran]) for (const recipient of [own.team.me.name, own.workerName])
-      expect(warnings(own.local.room.messages(), recipient)).toHaveLength(1)
-    publish(t.kieran.local, t.kieran.workerName, t.base)
-    await t.sync(); await t.sync()
-    for (const own of [t.rohan, t.kieran]) for (const recipient of [own.team.me.name, own.workerName]) {
-      expect(warnings(own.local.room.messages(), recipient)).toHaveLength(2)
-      expect(warnings(own.local.room.messages(), recipient)[1]).toMatchObject({ clearedFrom: 'possible', priority: 'fyi' })
-    }
-    const own = t.rohan
-    const pending = warnings(own.local.room.messages(), own.team.me.name).map(m => m.id)
-    await finishWorker(own.local, own.record.tag)
-    await own.registry.beginRetirement(own.record.id, await own.registry.archiveOf(own.record, { summary: 'collected' }))
-    await projectWorkers(own.local, own.registry, own.local.me.name, 'joined')
-    await own.bridge.sync()
-    for (const id of pending) expect(own.local.room.outcomes.has(id)).toBe(true)
-    expect(manifestPaths(own.team.room, own.workerName)).toEqual([])
-    expect(owed(own.local.room, own.local.me, { frontier: 0, routed: new Set() }, {}).some(m => pending.includes(m.id))).toBe(false)
-  }, 60_000)
 
   it('keeps equal held hashes clean without needing either remote blob', async () => {
     const t = await fixture([ORDERS, ORDERS])
     await t.sync()
     for (const [own, other] of [[t.rohan, t.kieran], [t.kieran, t.rohan]]) {
-      expect(own.team.room.doc.getMap('conflicts').get(slotKey(own.workerName, 'merge', other.workerName, PATH))).toMatchObject({ status: 'clean' })
-      for (const recipient of [own.team.me.name, own.workerName]) expect(warnings(own.local.room.messages(), recipient)).toEqual([])
+      expect(own.team.room.doc.getMap('conflicts').has(slotKey(own.workerName, 'merge', other.workerName, PATH))).toBe(false)
+      for (const recipient of [own.team.me.name, own.workerName]) expect(conflicts(own.local.room, recipient)).toEqual([])
     }
   })
 
@@ -280,7 +245,7 @@ describe('two-clone projected worker conflict reproductions (2026-11-15)', () =>
     const t = await fixture(changed === 0 ? [ORDERS, undefined] : [undefined, NAME])
     await t.sync()
     for (const own of [t.rohan, t.kieran]) for (const recipient of [own.team.me.name, own.workerName])
-      expect(warnings(own.local.room.messages(), recipient)).toEqual([])
+      expect(conflicts(own.local.room, recipient)).toEqual([])
   })
 
   it('compares exact worker texts when the remote version is readable', async () => {
@@ -292,8 +257,7 @@ describe('two-clone projected worker conflict reproductions (2026-11-15)', () =>
     await t.sync()
     for (const [own, other] of [[t.rohan, t.kieran], [t.kieran, t.rohan]]) {
       expect(own.team.room.doc.getMap('conflicts').get(slotKey(own.workerName, 'merge', other.workerName, PATH))).toMatchObject({ status: 'conflict' })
-      for (const recipient of [own.team.me.name, own.workerName])
-        expect(warnings(own.local.room.messages(), recipient)).toEqual([expect.objectContaining({ priority: 'notify' })])
+      expect(relays(own.local.room, own.workerName)).toEqual([expect.objectContaining({ priority: 'notify' })])
     }
   })
 
@@ -398,8 +362,7 @@ describe('two-clone projected worker conflict reproductions (2026-11-15)', () =>
     const t = await fixture()
     session(t.rohan.team.room, t.rohan.team.dir, bystander, t.base, false)
     await t.sync()
-    for (const own of [t.rohan, t.kieran]) for (const recipient of [own.team.me.name, own.workerName])
-      expect(warnings(own.local.room.messages(), recipient)).toHaveLength(1)
+    for (const own of [t.rohan, t.kieran]) expect(conflicts(own.team.room, own.team.me.name)).toHaveLength(1)
   })
 
   it('bounds registry snapshots for a stable projected conflict reconcile', async () => {
@@ -414,75 +377,6 @@ describe('two-clone projected worker conflict reproductions (2026-11-15)', () =>
   })
 
 
-  it.each(['collected', 'discarded'])('ends both private copies when the other family worker is %s', async outcome => {
-    const t = await fixture()
-    await t.sync()
-    const copies = t.rohan.local.room.messages().filter(m => m.type === 'merge-conflict')
-    expect(copies).toHaveLength(2)
-    await retireOther(t, outcome)
-    await t.rohan.bridge.sync()
-    expect(copies.every(m => t.rohan.local.room.outcomes.has(m.id))).toBe(true)
-    expect(owed(t.rohan.local.room, t.rohan.local.me, { frontier: 0, routed: new Set() }, {})
-      .some(m => copies.some(c => c.id === m.id))).toBe(false)
-    if (outcome === 'collected') {
-      publish(t.kieran.team, t.kieran.team.me.name, t.base, NAME)
-      await t.rohan.bridge.sync()
-      const collected = t.rohan.local.room.messages().filter(m => m.type === 'merge-conflict' && !copies.some(c => c.id === m.id))
-      expect(collected).toHaveLength(2)
-      expect(collected.every(m => m.priority === 'notify' && !t.rohan.local.room.outcomes.has(m.id))).toBe(true)
-    }
-  })
-
-  it('ends stored private copies after a lead restart and leaves the other same-tag successor deliverable', async () => {
-    const t = await fixture(), own = t.rohan, other = t.kieran
-    await t.sync()
-    const copies = own.local.room.messages().filter(m => m.type === 'merge-conflict')
-    const cold = room(); Y.applyUpdate(cold.doc, memorySnapshot(own.local.room.doc))
-    const local = session(cold, own.local.dir, own.local.me.name, t.base, true)
-    own.bridge.stop()
-    const bridge = new Bridge(own.team, local, { registry: own.registry, debounceMs: 0 })
-    cleanup.push(() => bridge.stop())
-    await retireOther(t, 'collected')
-    await bridge.sync()
-    expect(copies.every(m => cold.outcomes.has(m.id))).toBe(true)
-    // Reassert the local worker and publish a successor of the remote worker under the same tag.
-    const localHolder = participantRecord(own.local.room, own.workerName)!.holder!
-    cold.participants.set(`${own.workerName}\0holder`, localHolder)
-    cold.participants.set(`${own.workerName}\0git`, participantRecord(own.local.room, own.workerName)!.git!)
-    publish(local, own.workerName, t.base, ORDERS)
-    const { record } = await seedRegistryWorker(other.team.dir, other.record.tag, { name: other.workerName,
-      host: 'codex', mode: 'local', room: other.local.roomName, projectedInto: TEAM,
-      lead: other.record.lead, base: t.base, carriedBase: t.base })
-    other.local.room.participants.set(`${other.workerName}\0holder`, { sessionId: `session-${other.workerName}`, epoch: 1, workerId: record.id })
-    publish(other.local, other.workerName, t.base, NAME)
-    other.worker.awareness.setLocalState({ user: other.worker.me, sessionId: `session-${other.workerName}` })
-    await other.bridge.sync()
-    // Use the live local source for an exact own read; source presence does not come from the cache.
-    connectAwareness(own.worker.awareness, local.awareness)
-    await bridge.sync()
-    await reconcileProjectedConflicts({ team: own.team, workers: local, owner: own.workerName })
-    const fresh = cold.messages().filter(m => m.type === 'merge-conflict' && !copies.some(c => c.id === m.id))
-    expect(fresh).toHaveLength(2)
-    expect(fresh.every(m => m.noticeSubjects?.some(s => s.workerId === record.id))).toBe(true)
-    await bridge.sync()
-    expect(fresh.every(m => !cold.outcomes.has(m.id))).toBe(true)
-    expect(copies.every(m => cold.outcomes.has(m.id))).toBe(true)
-  })
-
-
-  it('ends a late-arriving private copy against an already observed remote retirement', async () => {
-    const t = await fixture(), own = t.rohan
-    await t.sync()
-    const original = own.local.room.messages().find(m => m.type === 'merge-conflict' && m.to === own.local.me.name)!
-    await retireOther(t, 'discarded')
-    own.bridge.start()
-    await own.bridge.sync()
-    const late = await own.local.post({ name: 'room', kind: 'agent' }, { type: 'merge-conflict', path: PATH,
-      to: own.local.me.name, text: 'late notice', priority: 'fyi', noticeSubjects: original.noticeSubjects },
-      { id: `${original.id}:late`, auto: true })
-    expect(late.ok).toBe(true)
-    expect(own.local.room.outcomes.has(late.msg.id)).toBe(true)
-  })
 
 })
 
@@ -491,14 +385,4 @@ async function finishExited(own: Awaited<ReturnType<typeof fixture>>['rohan']) {
   own.worker.awareness.setLocalState(null)
   const holder = participantRecord(own.local.room, own.workerName)!.holder!
   own.local.room.participants.set(`${own.workerName}\0holder`, { ...holder, ended: 'released' })
-}
-
-async function retireOther(t: Awaited<ReturnType<typeof fixture>>, outcome: string) {
-  const other = t.kieran
-  await finishExited(other)
-  if (outcome === 'discarded') await other.registry.beginStop(other.record.id, 'discarded')
-  const record = (await other.registry.read(other.record.id))!
-  await other.registry.beginRetirement(record.id, await other.registry.archiveOf(record, { summary: outcome }))
-  await projectWorkers(other.local, other.registry, other.local.me.name, 'joined')
-  await other.bridge.sync()
 }

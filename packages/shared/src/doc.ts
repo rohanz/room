@@ -1,5 +1,5 @@
 import { deliveryIndex, retireRecipient } from './delivery.js'
-import { retiredNoticeMatcher } from './notice-subjects.js'
+import { conflictEndReason, type ConflictSlot } from './conflicts.js'
 import { retainedPublication, publicationRevisionCurrent, type CompletedPublication } from './worker-memory.js'
 import { claimsOverlap } from './claims.js'
 import { MessageKinds } from './messages.js'
@@ -235,6 +235,9 @@ export class RoomDoc {
     this.doc.transact(() => {
       const names = this.retireWorkerMail(retired, at)
       const ids = new Set(retired.map(worker => worker.id))
+      const conflictEvidence = { retirement: retired.flatMap(worker => worker.id ? [{ id: worker.id, name: worker.name }] : []) }
+      const conflicts = this.doc.getMap<ConflictSlot>('conflicts')
+      for (const [key, slot] of conflicts) if (conflictEndReason(this, slot, conflictEvidence)) conflicts.delete(key)
       const cached = this.doc.getMap<CompletedPublication>('completedPublications')
       for (const [key, value] of cached) if (ids.has(value.worker.id)) cached.delete(key)
       for (const name of names) {
@@ -246,25 +249,7 @@ export class RoomDoc {
         this.colors.delete(name)
         this.seen(name).clear()
       }
-      const conflicts = this.doc.getMap<{ owner: string; other: string }>('conflicts')
-      for (const [key, slot] of conflicts) if (names.has(slot.owner) || names.has(slot.other)) conflicts.delete(key)
       for (const worker of retired) if (worker.id) this.workerViews.delete(worker.id)
-      this.endWorkerNotices(retired, at)
-    })
-  }
-
-  /** End only notices bound to these exact subjects; do not retire their local names or files. */
-  endWorkerNotices(workers: Iterable<Pick<RetiredWorker, 'id' | 'name'>>, at: number): void {
-    const retired = [...workers]
-    if (!retired.length) return
-    const notice = retiredNoticeMatcher(retired)
-    this.doc.transact(() => {
-      // End saved baseline notices as well as managed ones, even if their producer or hub exited.
-      for (const m of [...this.messages(), ...this.mail.values()]) {
-        if (!notice(m)) continue
-        if (!this.outcomes.has(m.id)) this.outcomes.set(m.id, { to: m.to ?? '', from: m.from, outcome: 'expired', at })
-        this.mail.delete(m.id)
-      }
     })
   }
 

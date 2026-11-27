@@ -1,3 +1,4 @@
+import { formatDeliveryItem } from '../ledger.js'
 import { formatMsg, type Priority } from '@room/shared'
 import { createHandlerState } from './state.js'
 import { createWorkerRestartNotices } from '../worker-restart-notices.js'
@@ -282,7 +283,7 @@ export function createTools(ctx: ToolCtx): Tools {
       const notices = ledger.notices(batch, budget).map(n => n.text)
       const moreNotices = ledger.noticeCount() - notices.length
       if (s?.rejected) notices.unshift(`[room] ${s.rejected.reason}: your changes are not reaching others; your last edits are not in the room`)
-      const line = ({ s: source, m }: Chosen) => `${source === s ? '' : '[workers room] '}${formatMsg(m)}`
+      const line = ({ s: source, m }: Chosen) => `${source === s ? '' : '[workers room] '}${formatDeliveryItem(m)}`
       const room = budget - notices.reduce((n, text) => n + text.length + 1, 0)
       // Silent while alone (solo.ts): what has no company stays for room_state and the next Room tool reply.
       const { chosen, more } = s ? selectWithin(ledger, [s, ...(ws && ws !== s ? [ws] : [])], batch, room, c => line(c).length + 3, false, state.audible) : { chosen: [], more: 0 }

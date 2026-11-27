@@ -9,6 +9,8 @@
  *  - workers' claims are mirrored into the team room under the lead's name ("[tag] intent");
  *  - team messages that touch a worker's paths are re-posted into the local room as interrupts
  *    addressed to that worker.
+ *  - team conflicts a worker cannot see privately are sent once per opening as addressed notes;
+ *    sibling conflicts use the private room’s native state.
  * Workers' questions to the lead and their done messages stay local; the lead reads both rooms.
  */
 import { git } from '@room/roomd/git'
@@ -16,7 +18,7 @@ import { authorizesText, defaultIgnoredPath, validRepoPath, DISK_READ_PATH } fro
 import { defaultExcludedPath, type SharingPolicy } from '@room/roomd/policy'
 import { ignoredTrackedPaths } from '@room/roomd/disk-scan'
 import * as Y from 'yjs'
-import { completedPublicationOf, digestPath, formatMsg, liveHolder, manifestKey, msgPaths, participantRecord, participantsView, scopeCovers, snapshotMetadata, snapshotStillCurrent } from '@room/shared'
+import { completedPublicationOf, digestPath, formatConflictLine, formatMsg, liveHolder, openConflicts, onOpenConflictsChanged, manifestKey, msgPaths, participantRecord, participantsView, scopeCovers, snapshotMetadata, snapshotStillCurrent } from '@room/shared'
 import type { Claim, CoordinationRecord, Coverage, ManifestEntry, ManifestHead, Msg, NoteMsg, ParticipantGit, ReleaseMsg, RoomDoc } from '@room/shared'
 import type { Session } from './session.js'
 import { registryForDir, type WorkerRegistry } from './worker-registry.js'
@@ -24,9 +26,9 @@ import { snapshotRead, type WorkerSnapshot } from './worker-store.js'
 import type { WorkerRecord } from './worker-status.js'
 import { projectWorkers } from './worker-projector.js'
 
-const RELAY_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'conflict', 'plan', 'base', 'scope'])
+const RELAY_TYPES = new Set<Msg['type']>(['claim', 'release', 'changed', 'plan', 'base', 'scope'])
 /** Team messages that stop a worker: everything else arrives at notify, read on its next action. */
-const INTERRUPT_TYPES = new Set<Msg['type']>(['plan', 'conflict', 'base'])
+const INTERRUPT_TYPES = new Set<Msg['type']>(['plan', 'base'])
 const RELAY_DEDUPE_MS = 60_000
 const RELAYED_MAX = 2000
 /** Backstop for inputs no observer reports (a policy change, a missed registry watch): manifest §12 "projection lag". */
@@ -111,7 +113,9 @@ export class Bridge {
   private registry?: WorkerRegistry
   private facts?: WorkerSnapshot
   private storageEpoch = 0
+  private factsEpoch = 0
   private running: Promise<void> = Promise.resolve()
+  private readonly conflictRelayed = new Map<string, Set<string>>()
 
   constructor(public team: Session, public local: Session, private o: BridgeOptions = {}) {
     this.registry = o.registry
@@ -145,8 +149,6 @@ export class Bridge {
     const l = this.local.room, t = this.team.room
     const completed = l.doc.getMap('completedPublications'), revisions = l.doc.getMap('completedPublicationRevisions')
     const onLocal = () => this.schedule()
-    const onRetiredNotices = () => this.endRetiredNotices()
-    const retired = t.doc.getArray('retiredWorkers')
     const onLocalClaims = (ev: { changes: { keys: Map<string, { action: string }> } }) => {
       for (const [id, ch] of ev.changes.keys) {
         if (ch.action === 'add') this.mirrorClaim(id)
@@ -176,17 +178,16 @@ export class Bridge {
       const me = this.team.me.name
       if (ev.keysChanged.has(me) || [...ev.keysChanged].some(k => k.startsWith(`${me}\u0000`))) this.schedule()
     }
-    retired.observe(onRetiredNotices); l.bus.observe(onRetiredNotices); l.mail.observe(onRetiredNotices)
     l.scopes.observe(onLocal); l.claims.observe(onLocalClaims)
     l.manifestHead.observe(onLocal); l.manifest.observeDeep(onLocal)
+    this.unobserve.push(onOpenConflictsChanged(t, () => { void this.relayConflicts() }))
     t.bus.observe(onTeamBus); t.claims.observe(onTeamClaims)
     t.participants.observe(onTeamLead); t.manifestHead.observe(onTeamLead)
-    const onSync = (synced: boolean) => { if (synced) this.schedule() }
+    const onSync = (synced: boolean) => { if (synced) { void this.relayConflicts(); this.schedule() } }
     this.team.provider.on?.('sync', onSync)
     this.local.provider.on?.('sync', onSync)
     l.workerViews.observe(onLocal); completed.observe(onLocal); revisions.observe(onLocal)
     this.unobserve.push(
-      () => retired.unobserve(onRetiredNotices), () => l.bus.unobserve(onRetiredNotices), () => l.mail.unobserve(onRetiredNotices),
       () => l.workerViews.unobserve(onLocal), () => completed.unobserve(onLocal), () => revisions.unobserve(onLocal),
       () => l.scopes.unobserve(onLocal), () => l.claims.unobserve(onLocalClaims),
       () => l.manifestHead.unobserve(onLocal), () => l.manifest.unobserveDeep(onLocal),
@@ -199,11 +200,12 @@ export class Bridge {
     const attach = async (registry: WorkerRegistry) => {
       if (this.stopped) return
       this.registry = registry
-      const facts = await registry.snapshot()
+      const epoch = this.storageEpoch, facts = await registry.snapshot()
       if (this.stopped) return
       this.unobserve.push(registry.onChange(() => { this.storageEpoch++; this.schedule() }))
-      if (!facts.available || facts.blockers.length) return
-      this.facts = facts
+      if (epoch !== this.storageEpoch || !facts.available || facts.blockers.length) return
+      this.facts = facts; this.factsEpoch = epoch
+      void this.relayConflicts()
       for (const c of l.openClaims()) this.mirrorClaim(c.id)
       this.schedule()
     }
@@ -211,13 +213,14 @@ export class Bridge {
     else void registryForDir(this.local.dir).then(attach).catch(e => this.o.log?.(`bridge: no worker registry: ${e instanceof Error ? e.message : String(e)}`))
   }
 
-  /** Stop observing; explicit leave releases mirrors, while host end retains offline coordination. */
+  /** Stop observing and release claim mirrors as requested. */
   stop(preserveFacts = false): void {
     this.stopped = true
     if (this.timer) clearTimeout(this.timer)
     if (this.tick) clearInterval(this.tick)
     for (const u of this.unobserve) u()
     this.unobserve = []
+    this.conflictRelayed.clear()
     if (!preserveFacts) for (const teamId of this.mirrored.values()) this.team.room.removeClaim(teamId, this)
     this.mirrored.clear()
     const lead = this.team.me.name
@@ -243,12 +246,13 @@ export class Bridge {
     if (this.stopped) return
     if (this.registry) {
       try {
-        const facts = await this.registry.snapshot()
-        if (this.stopped || !facts.available || facts.blockers.length) return
-        this.facts = facts
+        const epoch = this.storageEpoch, facts = await this.registry.snapshot()
+        if (this.stopped || epoch !== this.storageEpoch || !facts.available || facts.blockers.length) return
+        this.facts = facts; this.factsEpoch = epoch
       } catch (error) { this.o.log?.(`bridge: worker facts unavailable: ${String(error)}`); return }
     }
     if (this.stopped) return
+    await this.relayConflicts()
     try { this.syncCoordination() } catch (e) { this.o.log?.(`bridge: could not sync coordination: ${e instanceof Error ? e.message : String(e)}`) }
     return this.project()
   }
@@ -285,19 +289,13 @@ export class Bridge {
     return next
   }
 
-  /** Replay exact-subject retirement without retiring the other room's participant identities. */
-  private endRetiredNotices(): void {
-    if (!this.stopped && this.team.daemon.fence && this.local.daemon.fence)
-      this.local.room.endWorkerNotices(this.team.room.retiredWorkers(), Date.now())
-  }
-
   /**
    * `project(set)` (manifest §5.5, registry §13): views and retirement through the projector in the
    * `projected` role, then each written worker's participant record and manifest; projections of this lead
    * whose worker is no longer in the set are deleted.
    */
   private async projectOnce(registry: WorkerRegistry): Promise<void> {
-    this.endRetiredNotices()
+    if (!this.team.provider.synced || !this.local.provider.synced) return
     const authority = this.team.daemon.fence
     if (!authority) return
     const written = await projectWorkers(this.team, registry, this.local.me.name, 'projected', this, () => !this.stopped)
@@ -318,6 +316,7 @@ export class Bridge {
       if (!currentAuthority()) return
       await this.o.reconcileConflicts?.({ team: this.team, workers: this.local, owner: record.name })
     }
+    await this.relayConflicts()
   }
 
   /** Delete a projected participant's team records: its flat keys, manifest incarnations and head. */
@@ -336,10 +335,9 @@ export class Bridge {
    */
   private async projectWorker(record: WorkerRecord, retry = 0): Promise<void> {
     if (this.stopped || !this.registry) return
-    const facts = await this.registry.snapshot()
-    if (this.stopped || !facts.available || facts.blockers.length) return
-    this.facts = facts
-    const epoch = this.storageEpoch
+    const epoch = this.storageEpoch, facts = await this.registry.snapshot()
+    if (this.stopped || epoch !== this.storageEpoch || !facts.available || facts.blockers.length) return
+    this.facts = facts; this.factsEpoch = epoch
     const fresh = async () => {
       const latest = await this.registry!.snapshot()
       if (this.stopped || !latest.available || latest.blockers.length || latest.revision !== facts.revision || epoch !== this.storageEpoch) return false
@@ -654,7 +652,35 @@ export class Bridge {
     }, { auto: true })
   }
 
-  /** A team message about a worker's paths is re-posted to that worker locally: plans, conflicts and base
+  /** Current worker identities and openings only; ordinary sending owns the note once submitted. */
+  private async relayConflicts(): Promise<void> {
+    if (this.stopped || this.factsEpoch !== this.storageEpoch) return
+    const workers = this.workers(), ids = new Set(workers.map(worker => worker.id))
+    const current = new Map(workers.map(worker => [worker.id, new Map(openConflicts(this.team.room, worker.name)
+      .filter(entry => entry.slots.every(slot => slot.endpoints?.find(endpoint => endpoint.name === worker.name)?.workerId === worker.id
+        && !slot.endpoints?.some(endpoint => endpoint.name === entry.other && !!endpoint.workerId && ids.has(endpoint.workerId))))
+      .sort((a, b) => Number(a.priority !== 'fyi') - Number(b.priority !== 'fyi'))
+      .map(entry => [entry.slots[0]!.openId!, entry]))]))
+    for (const [worker, sent] of this.conflictRelayed) {
+      for (const opening of sent) if (!current.get(worker)?.has(opening)) sent.delete(opening)
+      if (!sent.size) this.conflictRelayed.delete(worker)
+    }
+    if (!this.team.daemon.fence || !this.team.provider.synced || !this.local.daemon.fence || !this.local.provider.synced) return
+    await Promise.all([...current].flatMap(([worker, entries]) => [...entries].map(async ([opening, entry]) => {
+      let sent = this.conflictRelayed.get(worker)
+      if (entry.priority === 'fyi' || sent?.has(opening)) return
+      if (!sent) this.conflictRelayed.set(worker, sent = new Set())
+      sent.add(opening)
+      try {
+        const result = await this.local.post<NoteMsg>(this.local.me, { type: 'note', to: entry.owner,
+          priority: entry.priority, text: `[team room] ${formatConflictLine(entry)}` }, { auto: true })
+        if (!result.ok) sent.delete(opening)
+      } catch (error) { sent.delete(opening); this.o.log?.(`bridge: conflict relay to ${entry.owner} failed: ${String(error)}`) }
+      if (!sent.size && this.conflictRelayed.get(worker) === sent) this.conflictRelayed.delete(worker)
+    })))
+  }
+
+  /** A team message about a worker's paths is re-posted to that worker locally: plans and base
    *  moves as interrupts, the rest at notify. One per worker, path and type per minute. */
   private relayDown(m: Msg): void {
     if (this.relayed.includes(m.id)) return
