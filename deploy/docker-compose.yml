@@ -6,7 +6,7 @@
 #   docker compose up -d
 #
 # Runs the published image ghcr.io/rohanz/room:<version>; `latest` follows the newest release.
-# The image version matches the plugin version. Pin one with ROOM_IMAGE_TAG=0.17.55 in .env. To build from a checkout instead:
+# The image version matches the plugin version. Pin one with ROOM_IMAGE_TAG=0.17.56 in .env. To build from a checkout instead:
 #   docker compose -f deploy/docker-compose.yml -f deploy/docker-compose.build.yml up -d --build
 #
 # Default: one container, state (LevelDB docs, registry, sessions, audit.log) on the `room_data` volume.

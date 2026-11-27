@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.17.56
+
+- **Conflict alerts and wakes are read from the room's own conflict state.** Room used to post a conflict as a message and keep a second private record of who had been told, and the two could disagree: a conflict could wake a session twice, or stay listed after it had ended. Each open conflict is now one entry in the room that every session reads with the same rule for when it has ended. A session is woken once per conflict; later changes to that conflict (another file joins, the lines move) arrive quietly, and a restart with the conflict still open does not wake it again. A conflict that really ends and later starts again is a new conflict and wakes once more. `room_state` lists each joined room's conflicts separately.
+- **A lead hears about its local worker's conflict with a teammate directly, and passes it on once.** A lead in a team room is woken from the team room's conflict state when one of its local workers conflicts with someone outside its own workers, and sends that worker one ordinary note. Known limit: the note is addressed by worker name, so a worker replaced by another with the same name before reading it can receive a note meant for its predecessor.
+- **A worker no longer misses a conflict that opens while its launch details are unreadable.** It records the conflict at once and delivers the wake when the details can be read.
+- **Records that no longer describe the current session cannot close a live conflict.** A stale projection of a worker, or a former lead's release of one, used to count as proof that the worker had been replaced.
+- **Known gap, unchanged from 0.17.55:** when a local worker reuses the name of an earlier worker that had joined the team room directly, teammates do not see that worker or a possible conflict with it. The worker's own lead is still told. Use a new tag until this is fixed.
 - **The workers skill tells a lead to say how much checking it wants.** Left to themselves, workers tended to run a project's whole gate each, which the lead then ran again on the combined result. A brief now states the split: a worker checks what it changed, and the lead runs everything once on the collected tree.
 
 ## 0.17.55
